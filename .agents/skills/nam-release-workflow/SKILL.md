@@ -13,6 +13,7 @@ Use this skill to turn the current thread's completed repo changes into a clean 
 - Default to a patch bump for docs, UX polish, copy, bug fixes, small workflow improvements, and project-maintenance changes.
 - Use a minor bump only when the repo gained a clearly new user-facing capability or a larger workflow surface.
 - Keep prerelease formatting consistent with the repo's current scheme, e.g. `0.0.5-alpha`.
+- When promoting a tested release candidate to a stable release, consolidate the prerelease notes into the stable version section and remove the RC sections from the final public changelog unless the user explicitly wants prerelease entries preserved.
 - Treat pushing `main` and pushing a release tag as separate decisions.
 - Always mention the matching version tag when reporting or proposing a release push to `main`.
 - After pushing `main`, explicitly ask whether the user wants to push the matching `v<version>` tag now.
@@ -52,6 +53,7 @@ Use this skill to turn the current thread's completed repo changes into a clean 
 - Use the current local date in `YYYY-MM-DD` format.
 - Keep notes concise and grouped under `Added`, `Changed`, and `Fixed` when applicable.
 - Prefer shipping one coherent release entry rather than stacking many tiny `Unreleased` bullets across threads.
+- For stable releases that follow one or more RCs, prefer one coherent stable changelog section instead of public RC sections.
 
 ## Cleanup Rules
 
