@@ -212,7 +212,7 @@ function renderTorchInstall(mode: GuideMode): JSX.Element {
         </p>
         <CopyableCodeBlock
           label="Step G: Install Neural Amp Modeler"
-          command={'pip install --upgrade "neural-amp-modeler>=0.12.3"'}
+          command={'pip install --upgrade "neural-amp-modeler>=0.13.0"'}
         />
       </>
     )
@@ -249,7 +249,7 @@ export default function Help() {
             In that case, NAM-BOT mainly needs the correct backend settings so it can point at the same Conda environment you already use for NAM training.
           </p>
           <p style={{ color: 'var(--text-steel)', marginBottom: '16px' }}>
-            Security note: NAM-BOT checks package metadata before importing NAM or Lightning and blocks Lightning <strong>2.6.2</strong> and <strong>2.6.3</strong>, which were compromised PyPI releases. Use <strong>neural-amp-modeler 0.12.3 or newer</strong> for fresh installs.
+            Security note: NAM-BOT checks package metadata before importing NAM or Lightning and blocks Lightning <strong>2.6.2</strong> and <strong>2.6.3</strong>, which were compromised PyPI releases. Use <strong>neural-amp-modeler 0.13.0 or newer</strong> for fresh installs and A2 local training.
           </p>
 
           <div style={{
@@ -391,7 +391,7 @@ export default function Help() {
           {guideMode !== 'amd' && (
             <CopyableCodeBlock
               label={guideMode === 'nvidia' ? 'Step F: Install Neural Amp Modeler' : 'Step D: Install Neural Amp Modeler'}
-              command={'pip install --upgrade "neural-amp-modeler>=0.12.3"'}
+              command={'pip install --upgrade "neural-amp-modeler>=0.13.0"'}
             />
           )}
 

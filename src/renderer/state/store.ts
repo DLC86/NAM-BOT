@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { JobSpec, TrainingPresetFile, JobRuntimeState } from '../../shared/training'
+import { getPresetArchitectureVersion, type JobSpec, type TrainingPresetFile, type JobRuntimeState } from '../../shared/training'
 import { createDefaultUpdateStatus, type UpdateStatus } from '../../shared/update'
 
 const epochRunnerRewardPresetId = 'epoch-runner-reward'
@@ -23,8 +23,27 @@ function getPresetSortBucket(preset: TrainingPresetFile): number {
   return 0
 }
 
+function getPresetArchitectureSortBucket(preset: TrainingPresetFile): number {
+  switch (getPresetArchitectureVersion(preset)) {
+    case 'a2':
+      return 0
+    case 'a1':
+      return 1
+    case 'custom':
+    default:
+      return 2
+  }
+}
+
 function sortPresets(presets: TrainingPresetFile[]): TrainingPresetFile[] {
   return [...presets].sort((left, right) => {
+    const leftArchitectureBucket = getPresetArchitectureSortBucket(left)
+    const rightArchitectureBucket = getPresetArchitectureSortBucket(right)
+
+    if (leftArchitectureBucket !== rightArchitectureBucket) {
+      return leftArchitectureBucket - rightArchitectureBucket
+    }
+
     const leftBucket = getPresetSortBucket(left)
     const rightBucket = getPresetSortBucket(right)
 

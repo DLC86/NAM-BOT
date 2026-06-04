@@ -27,6 +27,8 @@ The presets page defaults to a library view rather than showing the editor at al
 - User presets appear before built-in presets.
 - Some special user-owned presets may be surfaced a little differently from normal library entries.
 - Each preset is shown as a card with summary information.
+- Each preset card shows an architecture tag: `A2`, `A1`, or `CUSTOM`.
+- Preset lists and job dropdowns sort A2 presets before A1 presets, with custom architecture recipes after those groups.
 - Clicking the card background toggles the same `Show More` / `Show Less` state as the explicit button.
 - Built-in presets can be customized into user presets.
 - User presets can be edited, duplicated, exported, and deleted.
@@ -44,8 +46,8 @@ The manual editor is used when:
 The manual editor exposes friendly fields for the most common NAM training choices:
 
 - library metadata such as name, category, description, creator name, and creator link
-- model family and architecture choice
-- training defaults such as epochs, batch size, learning rate, learning-rate decay, `ny`, and MRSTFT loss
+- NAM architecture version, model family, and architecture choice
+- training defaults such as epochs, batch size, learning rate, learning-rate decay, `ny`, MRSTFT loss, weight decay, and A2 output normalization
 
 The editor shows a `Save Preset` button at both the top and bottom of the form.
 
@@ -102,14 +104,18 @@ interface TrainingPresetFile {
   updatedAt: string
   lockedJobFields: Array<'epochs' | 'latencySamples'>
   values: {
-    modelFamily: 'WaveNet' | 'LSTM'
-    architectureSize: 'standard' | 'lite' | 'feather' | 'nano' | 'custom'
+    architectureVersion: 'a1' | 'a2' | 'custom'
+    modelFamily: 'PackedWaveNet' | 'WaveNet' | 'LSTM'
+    architectureSize: 'packed' | 'standard' | 'lite' | 'feather' | 'nano' | 'custom'
     epochs: number
     batchSize: number
     learningRate: number
     learningRateDecay: number
     ny: number
     fitMrstft: boolean
+    mrstftWeight: number
+    weightDecay: number
+    outputNormalizeRmsDb: number | null
   }
   expert: {
     data?: Record<string, unknown>
@@ -140,8 +146,8 @@ interface TrainingPresetFile {
 {
   "schemaVersion": 1,
   "presetKind": "training",
-  "id": "my-wavenet-preset",
-  "name": "My WaveNet Preset",
+  "id": "my-a2-preset",
+  "name": "My A2 Preset",
   "description": "General-purpose amp capture preset.",
   "category": "custom",
   "builtIn": false,
@@ -151,14 +157,18 @@ interface TrainingPresetFile {
   "updatedAt": "2026-03-12T18:42:00.000Z",
   "lockedJobFields": [],
   "values": {
-    "modelFamily": "WaveNet",
-    "architectureSize": "standard",
+    "architectureVersion": "a2",
+    "modelFamily": "PackedWaveNet",
+    "architectureSize": "packed",
     "epochs": 100,
     "batchSize": 16,
     "learningRate": 0.004,
-    "learningRateDecay": 0.007,
+    "learningRateDecay": 0.006,
     "ny": 8192,
-    "fitMrstft": true
+    "fitMrstft": true,
+    "mrstftWeight": 0.0005,
+    "weightDecay": 0.000000317,
+    "outputNormalizeRmsDb": -18
   },
   "expert": {},
   "author": {
@@ -176,10 +186,12 @@ interface TrainingPresetFile {
 
 The manual editor fields map to the generated NAM config files.
 
+- `NAM Architecture`
+  - marks the preset as `A2`, `A1`, or `Custom` in the editor
 - `Model Family`
-  - selects the major network path: WaveNet or LSTM
+  - selects the major network path: Packed WaveNet for A2, or WaveNet/LSTM for A1 and custom local recipes
 - `Architecture`
-  - selects one of the built-in architecture templates for the selected family
+  - selects Packed for A2, or one of the A1 architecture templates for WaveNet/LSTM
 - `Default Epochs`
   - maps to trainer max epochs unless a job override replaces it
 - `Batch Size`
@@ -192,6 +204,12 @@ The manual editor fields map to the generated NAM config files.
   - maps to the training window length in `data.json`
 - `Fit MRSTFT`
   - toggles the additional MRSTFT-related loss terms
+- `MRSTFT Weight`
+  - controls the strength of the MRSTFT loss term
+- `Weight Decay`
+  - maps to optimizer weight decay
+- `Output Normalize RMS dB`
+  - adds the A2 joint output normalization step when enabled
 
 ## Expert Overrides
 
@@ -200,6 +218,7 @@ Expert overrides are optional JSON blocks merged on top of the generated base co
 - `Data JSON` merges on top of generated `data.json`
 - `Model JSON` merges on top of generated `model.json`
 - `Learning JSON` merges on top of generated `learning.json`
+- If `Model JSON` provides `net`, that `net` replaces the generated `net` instead of deep-merging into it. This prevents mixed A1/A2 model shapes.
 
 For backward compatibility, NAM-BOT also accepts older custom-architecture preset exports where
 `expert.model` is a raw WaveNet or LSTM config snippet instead of a full `model.json` override.
@@ -273,6 +292,7 @@ Backward compatibility is handled through schema normalization.
 
 - All preset reads pass through `normalizeTrainingPreset()`.
 - Missing fields are backfilled with defaults.
+- Missing architecture fields are inferred where possible. `PackedWaveNet` is treated as `a2`; WaveNet and LSTM are treated as `a1`; unknown nets are treated as `custom`.
 - Optional sharing metadata can be absent in older files without causing failures.
 - Legacy custom-architecture presets from older NAM-BOT releases are upgraded from flat
   `expert.model` config snippets to the canonical `expert.model.net.config` shape during load.
@@ -300,18 +320,22 @@ This separation is important for:
 
 ## Current Built-In Defaults
 
-Current built-in defaults are aligned with the WaveNet-focused NAM presets:
+Current built-in defaults are aligned with official NAM A2 local training:
 
-- model family: `WaveNet`
-- architecture: `standard`
+- NAM architecture: `a2`
+- model family: `PackedWaveNet`
+- architecture: `packed`
 - epochs: `100`
 - batch size: `16`
 - learning rate: `0.004`
-- learning-rate decay: `0.007`
+- learning-rate decay: `0.006`
 - `ny`: `8192`
 - MRSTFT enabled: `true`
+- MRSTFT weight: `0.0005`
+- weight decay: `0.000000317`
+- output normalization: `-18 dB RMS`
 
-There is also a hidden LSTM compatibility preset used to preserve older drafts.
+The previous WaveNet presets remain available as `a1` presets. There is also a hidden LSTM compatibility preset used to preserve older drafts.
 
 ## Future Extensions
 

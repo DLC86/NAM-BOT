@@ -1,7 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { defaultJobSpec, type JobSpec } from '../types/jobs'
-import { validateJobSpec } from './configBuilder'
+import {
+  A1_STANDARD_PRESET_ID,
+  DEFAULT_PRESET_ID,
+  createTrainingPreset,
+  defaultJobSpec,
+  getBuiltInPreset,
+  type JobSpec
+} from '../types/jobs'
+import { buildJobConfigs, validateJobSpec } from './configBuilder'
+
+const tempDirs: string[] = []
+
+function createTempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'nam-bot-config-'))
+  tempDirs.push(dir)
+  return dir
+}
 
 function buildJobSpec(overrides: Partial<JobSpec> = {}): JobSpec {
   const base: JobSpec = {
@@ -26,6 +44,15 @@ function buildJobSpec(overrides: Partial<JobSpec> = {}): JobSpec {
     }
   }
 }
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop()
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
 
 describe('validateJobSpec', () => {
   it('accepts a complete job spec', () => {
@@ -84,5 +111,78 @@ describe('validateJobSpec', () => {
       valid: true,
       errors: []
     })
+  })
+})
+
+describe('buildJobConfigs', () => {
+  it('generates A2 PackedWaveNet model and output normalization configs by default', () => {
+    const tempDir = createTempDir()
+    const preset = getBuiltInPreset(DEFAULT_PRESET_ID)
+    const paths = buildJobConfigs(buildJobSpec(), tempDir, preset)
+    const dataConfig = JSON.parse(readFileSync(paths.dataConfig, 'utf-8')) as {
+      joint?: Array<{ name?: string; kwargs?: { level_rms_dbfs?: number } }>
+    }
+    const modelConfig = JSON.parse(readFileSync(paths.modelConfig, 'utf-8')) as {
+      net?: { name?: string; config?: { submodels?: unknown[]; export?: { container_max_values?: string } } }
+      loss?: { mrstft_weight?: number }
+      optimizer?: { weight_decay?: number }
+    }
+
+    expect(modelConfig.net?.name).toBe('PackedWaveNet')
+    expect(modelConfig.net?.config?.submodels).toHaveLength(2)
+    expect(modelConfig.net?.config?.export?.container_max_values).toBe('uniform')
+    expect(modelConfig.loss?.mrstft_weight).toBe(0.0005)
+    expect(modelConfig.optimizer?.weight_decay).toBe(3.17e-7)
+    expect(dataConfig.joint?.[0]).toEqual({
+      name: 'nam.data.normalize_joint_dataset_output',
+      kwargs: {
+        level_rms_dbfs: -18
+      }
+    })
+  })
+
+  it('keeps A1 WaveNet configs on A1 presets', () => {
+    const tempDir = createTempDir()
+    const preset = getBuiltInPreset(A1_STANDARD_PRESET_ID)
+    const paths = buildJobConfigs(buildJobSpec(), tempDir, preset)
+    const dataConfig = JSON.parse(readFileSync(paths.dataConfig, 'utf-8')) as { joint?: unknown }
+    const modelConfig = JSON.parse(readFileSync(paths.modelConfig, 'utf-8')) as {
+      net?: { name?: string; config?: { submodels?: unknown[] } }
+      loss?: { pre_emph_mrstft_weight?: number; mrstft_weight?: number }
+      optimizer?: { weight_decay?: number }
+    }
+
+    expect(modelConfig.net?.name).toBe('WaveNet')
+    expect(modelConfig.net?.config?.submodels).toBeUndefined()
+    expect(modelConfig.loss?.pre_emph_mrstft_weight).toBe(0.0002)
+    expect(modelConfig.loss?.mrstft_weight).toBeUndefined()
+    expect(modelConfig.optimizer?.weight_decay).toBeUndefined()
+    expect(dataConfig.joint).toBeUndefined()
+  })
+
+  it('replaces generated model.net when an expert net override is supplied', () => {
+    const tempDir = createTempDir()
+    const expertNet = {
+      name: 'WaveNet',
+      config: {
+        layers_configs: [],
+        head_scale: 0.42
+      }
+    }
+    const preset = createTrainingPreset({
+      id: 'expert-net-replacement',
+      name: 'Expert Net Replacement',
+      expert: {
+        model: {
+          net: expertNet
+        }
+      }
+    })
+    const paths = buildJobConfigs(buildJobSpec(), tempDir, preset)
+    const modelConfig = JSON.parse(readFileSync(paths.modelConfig, 'utf-8')) as {
+      net?: typeof expertNet
+    }
+
+    expect(modelConfig.net).toEqual(expertNet)
   })
 })

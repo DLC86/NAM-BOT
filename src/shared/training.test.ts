@@ -3,7 +3,13 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { buildJobConfigs } from '../main/config/configBuilder'
-import { normalizeTrainingPreset, type JobSpec } from './training'
+import {
+  DEFAULT_PRESET_ID,
+  createImportedPreset,
+  getBuiltInPreset,
+  normalizeTrainingPreset,
+  type JobSpec
+} from './training'
 
 const tempDirs: string[] = []
 
@@ -100,6 +106,15 @@ afterEach(() => {
 })
 
 describe('legacy custom preset compatibility', () => {
+  it('uses A2 PackedWaveNet as the default built-in preset', () => {
+    const preset = getBuiltInPreset(DEFAULT_PRESET_ID)
+
+    expect(preset.values.architectureVersion).toBe('a2')
+    expect(preset.values.modelFamily).toBe('PackedWaveNet')
+    expect(preset.values.architectureSize).toBe('packed')
+    expect(preset.values.outputNormalizeRmsDb).toBe(-18)
+  })
+
   it('normalizes legacy flat model snippets into net.config', () => {
     const preset = normalizeTrainingPreset(legacyWaveNetPresetInput)
     const net = preset.expert.model?.net as Record<string, unknown> | undefined
@@ -126,5 +141,39 @@ describe('legacy custom preset compatibility', () => {
     expect(modelConfig.layers_configs).toBeUndefined()
     expect(modelConfig.net?.config?.layers_configs?.[0]?.channels).toBe(8)
     expect(modelConfig.net?.config?.layers_configs?.[0]?.kernel_size).toBe(5)
+  })
+
+  it('imports WaveNet snippets as A1 without A2-only defaults', () => {
+    const imported = createImportedPreset(JSON.stringify({ layers_configs: [] }))
+
+    expect(imported.preset.values.architectureVersion).toBe('a1')
+    expect(imported.preset.values.modelFamily).toBe('WaveNet')
+    expect(imported.preset.values.architectureSize).toBe('custom')
+    expect(imported.preset.values.outputNormalizeRmsDb).toBeNull()
+    expect(imported.preset.values.weightDecay).toBe(0)
+  })
+
+  it('lets expert model.net drive the saved architecture tag', () => {
+    const preset = normalizeTrainingPreset({
+      ...legacyWaveNetPresetInput,
+      values: {
+        ...legacyWaveNetPresetInput.values,
+        architectureVersion: 'a1'
+      },
+      expert: {
+        model: {
+          net: {
+            name: 'PackedWaveNet',
+            config: {
+              submodels: []
+            }
+          }
+        }
+      }
+    })
+
+    expect(preset.values.architectureVersion).toBe('a2')
+    expect(preset.values.modelFamily).toBe('PackedWaveNet')
+    expect(preset.values.architectureSize).toBe('packed')
   })
 })

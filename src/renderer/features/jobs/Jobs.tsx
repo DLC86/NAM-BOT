@@ -38,7 +38,8 @@ import {
   NamGearType,
   NamToneType,
   TrainingPresetFile,
-  defaultJobSpec
+  defaultJobSpec,
+  formatPresetArchitectureTag
 } from '../../state/types'
 import {
   isActiveRuntime,
@@ -143,11 +144,13 @@ interface DraftCardProps {
   onDuplicate: (jobId: string) => Promise<void>
   onBatchFromTemplate: (job: JobSpec) => void
   onDelete: (job: JobSpec) => void
+  isQueueing: boolean
 }
 
-function DraftCard({ job, presets, onEdit, onQueue, onDuplicate, onBatchFromTemplate, onDelete }: DraftCardProps) {
+function DraftCard({ job, presets, onEdit, onQueue, onDuplicate, onBatchFromTemplate, onDelete, isQueueing }: DraftCardProps) {
   const preset = presets.find(p => p.id === job.presetId)
   const presetName = preset ? formatPresetNameWithRewardTag(preset) : job.presetId || 'Unknown Preset'
+  const presetTag = preset ? formatPresetArchitectureTag(preset) : 'CUSTOM'
 
   return (
     <div className="job-card">
@@ -160,7 +163,7 @@ function DraftCard({ job, presets, onEdit, onQueue, onDuplicate, onBatchFromTemp
             {getBasename(job.outputAudioPath) || 'No output'}
           </div>
           <div className="job-meta-preset">
-            <span className="meta-label">Preset:</span> {presetName}
+            <span className="meta-label">Preset:</span> <span className="queue-status-badge queued">{presetTag}</span> {presetName}
           </div>
           {job.batchSourceName && (
             <div className="job-batch-badge" title={`Created from ${job.batchSourceName}`}>
@@ -170,19 +173,19 @@ function DraftCard({ job, presets, onEdit, onQueue, onDuplicate, onBatchFromTemp
         </div>
       </div>
       <div className="job-actions">
-        <button className="btn btn-sm btn-blue" onClick={() => onEdit(job)}>
+        <button className="btn btn-sm btn-blue" onClick={() => onEdit(job)} disabled={isQueueing}>
           Edit
         </button>
-        <button className="btn btn-sm btn-green" onClick={() => void onQueue(job.id)}>
-          Queue
+        <button className={`btn btn-sm btn-green${isQueueing ? ' processing-text' : ''}`} onClick={() => void onQueue(job.id)} disabled={isQueueing}>
+          {isQueueing ? 'Queueing...' : 'Queue'}
         </button>
-        <button className="btn btn-sm btn-secondary" onClick={() => void onDuplicate(job.id)}>
+        <button className="btn btn-sm btn-secondary" onClick={() => void onDuplicate(job.id)} disabled={isQueueing}>
           Copy
         </button>
-        <button className="btn btn-sm btn-secondary" onClick={() => onBatchFromTemplate(job)} title="Create a batch from this draft">
+        <button className="btn btn-sm btn-secondary" onClick={() => onBatchFromTemplate(job)} disabled={isQueueing} title="Create a batch from this draft">
           Create Batch
         </button>
-        <button className="btn btn-sm btn-orange" onClick={() => onDelete(job)}>
+        <button className="btn btn-sm btn-orange" onClick={() => onDelete(job)} disabled={isQueueing}>
           Delete
         </button>
       </div>
@@ -213,7 +216,9 @@ interface SortableQueueItemProps {
 }
 
 function SortableQueueItem({ runtime, queue, presets, index, onUnqueue }: SortableQueueItemProps) {
-  const presetName = presets.find(p => p.id === runtime.frozenJob.presetId)?.name || runtime.frozenJob.presetId || 'Unknown'
+  const preset = presets.find(p => p.id === runtime.frozenJob.presetId)
+  const presetName = preset?.name || runtime.frozenJob.presetId || 'Unknown'
+  const presetTag = preset ? formatPresetArchitectureTag(preset) : 'CUSTOM'
   const headline = runtime.status === 'validating'
     ? 'Validating job before queue'
     : `Waiting in queue - ${index + 1} of ${queue.length}`
@@ -253,7 +258,7 @@ function SortableQueueItem({ runtime, queue, presets, index, onUnqueue }: Sortab
               <div className="queue-card-stat-row">
                 <span className="queue-card-stat">
                   <span className="meta-label">Preset</span>
-                  <span>{presetName}</span>
+                  <span><span className="queue-status-badge queued">{presetTag}</span> {presetName}</span>
                 </span>
                 <span className="queue-card-stat">
                   <span className="meta-label">Epochs</span>
@@ -299,12 +304,43 @@ export default function Jobs() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now())
   const [pendingDeleteJob, setPendingDeleteJob] = useState<JobSpec | null>(null)
   const [skipDraftDeleteConfirm, setSkipDraftDeleteConfirm] = useState(false)
+  const [queueingDraftIds, setQueueingDraftIds] = useState<Set<string>>(() => new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const batchFileInputRef = useRef<HTMLInputElement>(null)
   const batchTemplateRef = useRef<BatchTemplateSource | null>(null)
+  const queueingDraftIdsRef = useRef<Set<string>>(new Set())
 
   const loadData = async () => {
     await loadJobs()
+  }
+
+  const markDraftQueueing = (jobId: string): boolean => {
+    if (queueingDraftIdsRef.current.has(jobId)) {
+      return false
+    }
+
+    queueingDraftIdsRef.current.add(jobId)
+    setQueueingDraftIds(new Set(queueingDraftIdsRef.current))
+    return true
+  }
+
+  const clearDraftQueueing = (jobId: string): void => {
+    queueingDraftIdsRef.current.delete(jobId)
+    setQueueingDraftIds(new Set(queueingDraftIdsRef.current))
+  }
+
+  const setManyDraftsQueueing = (jobIds: string[]): void => {
+    for (const jobId of jobIds) {
+      queueingDraftIdsRef.current.add(jobId)
+    }
+    setQueueingDraftIds(new Set(queueingDraftIdsRef.current))
+  }
+
+  const clearManyDraftsQueueing = (jobIds: string[]): void => {
+    for (const jobId of jobIds) {
+      queueingDraftIdsRef.current.delete(jobId)
+    }
+    setQueueingDraftIds(new Set(queueingDraftIdsRef.current))
   }
 
   useEffect(() => {
@@ -386,8 +422,8 @@ export default function Jobs() {
     const storedPresetId = window.localStorage.getItem(LAST_USED_PRESET_STORAGE_KEY)
     const appendPresetToModelFileName = getStoredAppendPresetToModelFileNamePreference()
     const appendEsrToModelFileName = getStoredAppendEsrToModelFileNamePreference()
-    const fallbackPreset = visiblePresets.find((preset) => preset.id === storedPresetId)
-      ?? visiblePresets.find((preset) => preset.id === DEFAULT_PRESET_ID)
+    const fallbackPreset = visiblePresets.find((preset) => preset.id === DEFAULT_PRESET_ID)
+      ?? visiblePresets.find((preset) => preset.id === storedPresetId)
       ?? visiblePresets[0]
     const createdJobs: JobSpec[] = []
 
@@ -533,8 +569,13 @@ export default function Jobs() {
   }
 
   const handleEnqueue = async (jobId: string) => {
+    if (!markDraftQueueing(jobId)) {
+      return
+    }
+
     const job = drafts.find(d => d.id === jobId)
     if (job && (!job.name.trim() || !job.inputAudioPath.trim() || !job.outputAudioPath.trim() || !job.outputRootDir.trim())) {
+      clearDraftQueueing(jobId)
       setQueueError('Cannot queue job: Some required fields are missing. Please Edit the job first.')
       return
     }
@@ -546,11 +587,13 @@ export default function Jobs() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setQueueError(`Queue failed: ${message}`)
+    } finally {
+      clearDraftQueueing(jobId)
     }
   }
 
   const handleQueueAll = async () => {
-    if (drafts.length === 0) {
+    if (drafts.length === 0 || queueingDraftIdsRef.current.size > 0) {
       return
     }
 
@@ -564,9 +607,11 @@ export default function Jobs() {
     }
 
     const skippedCount = drafts.length - validDrafts.length
+    const validDraftIds = validDrafts.map((draft) => draft.id)
+    setManyDraftsQueueing(validDraftIds)
 
     try {
-      await window.namBot.jobs.enqueueMany(validDrafts.map((draft) => draft.id))
+      await window.namBot.jobs.enqueueMany(validDraftIds)
       await loadData()
       if (skippedCount > 0) {
         setQueueError(`Queued ${validDrafts.length} jobs. ${skippedCount} jobs were skipped because they are missing required fields.`)
@@ -576,6 +621,8 @@ export default function Jobs() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setQueueError(`Queue failed: ${message}`)
+    } finally {
+      clearManyDraftsQueueing(validDraftIds)
     }
   }
 
@@ -695,6 +742,7 @@ export default function Jobs() {
     })
 
   const isEmpty = drafts.length === 0 && queue.length === 0
+  const isAnyDraftQueueing = queueingDraftIds.size > 0
 
   if (jobEditorSession) {
     return (
@@ -792,8 +840,8 @@ export default function Jobs() {
               <div className="job-list">
               <div className="panel-header" style={{ marginBottom: '0px' }}>
                 <h3>Drafts ({drafts.length})</h3>
-                <button className="btn btn-sm btn-secondary" onClick={() => void handleQueueAll()} disabled={drafts.length === 0}>
-                  Queue All
+                <button className={`btn btn-sm btn-secondary${isAnyDraftQueueing ? ' processing-text' : ''}`} onClick={() => void handleQueueAll()} disabled={drafts.length === 0 || isAnyDraftQueueing}>
+                  {isAnyDraftQueueing ? 'Queueing...' : 'Queue All'}
                 </button>
               </div>
               {drafts.map((job) => (
@@ -806,6 +854,7 @@ export default function Jobs() {
                   onDuplicate={handleDuplicate}
                   onBatchFromTemplate={handleBatchFromTemplate}
                   onDelete={handleRequestDeleteJob}
+                  isQueueing={queueingDraftIds.has(job.id)}
                 />
               ))}
               </div>
@@ -1416,13 +1465,13 @@ function JobEditor({
                 >
                   {visiblePresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
-                      {formatPresetNameWithRewardTag(preset)}
+                      [{formatPresetArchitectureTag(preset)}] {formatPresetNameWithRewardTag(preset)}
                     </option>
                   ))}
                 </select>
                 {selectedPreset && (
                   <p style={{ color: 'var(--text-steel)', fontSize: '12px', marginTop: '6px' }}>
-                    {selectedPreset.values.modelFamily} / {selectedPreset.values.architectureSize}. {selectedPreset.description}
+                    <span className="queue-status-badge queued">{formatPresetArchitectureTag(selectedPreset)}</span> {selectedPreset.values.modelFamily} / {selectedPreset.values.architectureSize}. {selectedPreset.description}
                   </p>
                 )}
               </div>

@@ -4,8 +4,10 @@ import log from 'electron-log/main'
 import {
   JobSpec,
   TrainingPresetFile,
+  buildA2PackedModelConfig,
   buildLstmConfig,
-  buildWaveNetConfig
+  buildWaveNetConfig,
+  isA2TrainingPreset
 } from '../types/jobs'
 
 export interface GeneratedConfigPaths {
@@ -32,8 +34,26 @@ function deepMerge(base: Record<string, unknown>, override: Record<string, unkno
   return result
 }
 
+function mergeModelConfig(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base }
+
+  for (const [key, value] of Object.entries(override)) {
+    if (key === 'net' && isRecord(value)) {
+      result.net = value
+      continue
+    }
+    if (isRecord(value) && isRecord(result[key])) {
+      result[key] = deepMerge(result[key] as Record<string, unknown>, value)
+      continue
+    }
+    result[key] = value
+  }
+
+  return result
+}
+
 function buildBaseDataConfig(job: JobSpec, preset: TrainingPresetFile): Record<string, unknown> {
-  return {
+  const dataConfig: Record<string, unknown> = {
     train: {
       start_seconds: null,
       stop_seconds: -9.0,
@@ -51,10 +71,27 @@ function buildBaseDataConfig(job: JobSpec, preset: TrainingPresetFile): Record<s
       allow_unequal_lengths: true
     }
   }
+
+  if (isA2TrainingPreset(preset) && preset.values.outputNormalizeRmsDb != null) {
+    dataConfig.joint = [
+      {
+        name: 'nam.data.normalize_joint_dataset_output',
+        kwargs: {
+          level_rms_dbfs: preset.values.outputNormalizeRmsDb
+        }
+      }
+    ]
+  }
+
+  return dataConfig
 }
 
 function buildBaseModelConfig(preset: TrainingPresetFile): Record<string, unknown> {
   const schedulerGamma = Math.max(0, 1 - preset.values.learningRateDecay)
+
+  if (isA2TrainingPreset(preset)) {
+    return buildA2PackedModelConfig(preset.values)
+  }
 
   if (preset.values.modelFamily === 'LSTM') {
     const loss: Record<string, unknown> = {
@@ -64,8 +101,8 @@ function buildBaseModelConfig(preset: TrainingPresetFile): Record<string, unknow
       pre_emph_coef: 0.85
     }
 
-    if (preset.values.fitMrstft) {
-      loss.pre_emph_mrstft_weight = 0.0002
+    if (preset.values.fitMrstft && preset.values.mrstftWeight > 0) {
+      loss.pre_emph_mrstft_weight = preset.values.mrstftWeight
       loss.pre_emph_mrstft_coef = 0.85
     }
 
@@ -91,8 +128,8 @@ function buildBaseModelConfig(preset: TrainingPresetFile): Record<string, unknow
     val_loss: 'esr'
   }
 
-  if (preset.values.fitMrstft) {
-    loss.pre_emph_mrstft_weight = 0.0002
+  if (preset.values.fitMrstft && preset.values.mrstftWeight > 0) {
+    loss.pre_emph_mrstft_weight = preset.values.mrstftWeight
     loss.pre_emph_mrstft_coef = 0.85
   }
 
@@ -103,7 +140,8 @@ function buildBaseModelConfig(preset: TrainingPresetFile): Record<string, unknow
     },
     loss,
     optimizer: {
-      lr: preset.values.learningRate
+      lr: preset.values.learningRate,
+      ...(preset.values.weightDecay > 0 ? { weight_decay: preset.values.weightDecay } : {})
     },
     lr_scheduler: {
       class: 'ExponentialLR',
@@ -149,7 +187,7 @@ export function buildJobConfigs(
     : buildBaseDataConfig(job, preset)
 
   const modelConfig = preset.expert.model && isRecord(preset.expert.model)
-    ? deepMerge(buildBaseModelConfig(preset), preset.expert.model)
+    ? mergeModelConfig(buildBaseModelConfig(preset), preset.expert.model)
     : buildBaseModelConfig(preset)
 
   const learningConfig = preset.expert.learning && isRecord(preset.expert.learning)

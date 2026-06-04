@@ -2,9 +2,15 @@ import { useEffect, useState } from 'react'
 import { HashRouter, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 
 import type { AppCommand } from '../shared/appShell'
-import { AcceleratorDiagnosticsSummary, BackendValidationSummary, useAppStore } from './state/store'
+import {
+  AcceleratorDiagnosticsSummary,
+  BackendValidationSummary,
+  NamVersionInfo,
+  TrainingLaunchDiagnosticsSummary,
+  useAppStore
+} from './state/store'
 import type { UpdateStatus } from '../shared/update'
-import { JobRuntimeState, TrainingPresetFile } from './state/types'
+import { JobRuntimeState, MIN_A2_NAM_VERSION } from './state/types'
 import Settings from './features/settings/Settings'
 import Diagnostics from './features/diagnostics/Diagnostics'
 import Jobs from './features/jobs/Jobs'
@@ -16,100 +22,210 @@ import { buildJobEditorSession, createNewJobDraft } from './features/jobs/jobEdi
 import { buildNewPresetDraft, buildPresetEditorSession } from './features/presets/presetEditorSession'
 import log from 'electron-log/renderer'
 
-function getBackendSummary(validation: BackendValidationSummary | null): {
+type DashboardDiagnosticsStatus = 'pass' | 'warn' | 'fail' | 'skip'
+
+interface DashboardDiagnosticsCard {
+  title: string
+  status: DashboardDiagnosticsStatus
   label: string
   detail: string
-  color: string
-} {
-  if (!validation) {
-    return {
-      label: 'Checking',
-      detail: 'Waiting for backend validation results.',
-      color: 'var(--text-steel)'
-    }
-  }
+  checkedAt: string | null
+}
 
-  if (validation.overallOk) {
-    return {
-      label: 'Validated',
-      detail: `Last checked ${new Date(validation.checkedAt).toLocaleString()}.`,
-      color: 'var(--neon-green)'
-    }
-  }
-
-  return {
-    label: 'Needs attention',
-    detail: 'Open Diagnostics to see which backend checks failed.',
-    color: 'var(--neon-magenta)'
+function getDashboardStatusColor(status: DashboardDiagnosticsStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'var(--neon-green)'
+    case 'warn':
+      return 'var(--neon-cyan)'
+    case 'fail':
+      return 'var(--neon-magenta)'
+    case 'skip':
+    default:
+      return 'var(--text-steel)'
   }
 }
 
-function getAcceleratorSummary(acceleratorDiagnostics: AcceleratorDiagnosticsSummary | null): {
-  label: string
-  detail: string
-  color: string
-} {
+function getDashboardStatusLabel(status: DashboardDiagnosticsStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'PASS'
+    case 'warn':
+      return 'CHECK'
+    case 'fail':
+      return 'FAIL'
+    case 'skip':
+    default:
+      return 'SKIP'
+  }
+}
+
+function getAcceleratorCardStatus(acceleratorDiagnostics: AcceleratorDiagnosticsSummary | null): DashboardDiagnosticsStatus {
   if (!acceleratorDiagnostics) {
-    return {
-      label: 'Checking',
-      detail: 'Waiting for GPU visibility diagnostics.',
-      color: 'var(--text-steel)'
-    }
+    return 'skip'
   }
 
   switch (acceleratorDiagnostics.status) {
     case 'ready':
-      if (acceleratorDiagnostics.issue === 'rocm_ready') {
-        return {
-          label: acceleratorDiagnostics.deviceName ? `AMD GPU: ${acceleratorDiagnostics.deviceName}` : 'AMD GPU ready',
-          detail: acceleratorDiagnostics.detail,
-          color: 'var(--neon-green)'
-        }
-      }
-      return {
-        label: acceleratorDiagnostics.deviceName ? `NVIDIA GPU: ${acceleratorDiagnostics.deviceName}` : 'NVIDIA GPU ready',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--neon-green)'
-      }
+      return 'pass'
     case 'advisory':
-      return {
-        label: 'GPU seen, check Lightning',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--neon-cyan)'
-      }
+      return 'warn'
     case 'cpu_only':
-      return {
-        label: 'CPU-only torch build',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--neon-magenta)'
-      }
+      return acceleratorDiagnostics.hostNvidiaSmiAvailable ? 'warn' : 'pass'
     case 'not_visible':
-      return {
-        label: 'CUDA not visible',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--neon-magenta)'
-      }
+      return 'fail'
     case 'not_checked':
-      return {
-        label: 'Not checked',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--text-steel)'
-      }
+      return 'skip'
     case 'error':
     default:
-      return {
-        label: 'Probe failed',
-        detail: acceleratorDiagnostics.detail,
-        color: 'var(--neon-magenta)'
-      }
+      return 'fail'
   }
+}
+
+function getTrainingLaunchCardStatus(trainingLaunchDiagnostics: TrainingLaunchDiagnosticsSummary | null): DashboardDiagnosticsStatus {
+  if (!trainingLaunchDiagnostics) {
+    return 'skip'
+  }
+
+  switch (trainingLaunchDiagnostics.status) {
+    case 'ready':
+      return 'pass'
+    case 'advisory':
+      return 'warn'
+    case 'not_checked':
+      return 'skip'
+    case 'error':
+    default:
+      return 'fail'
+  }
+}
+
+function getNamVersionCardStatus(namVersionInfo: NamVersionInfo | null): DashboardDiagnosticsStatus {
+  if (!namVersionInfo) {
+    return 'skip'
+  }
+
+  return namVersionInfo.checkStatus !== 'ok' || namVersionInfo.isUpToDate === false ? 'warn' : 'pass'
+}
+
+function getNamVersionCardLabel(namVersionInfo: NamVersionInfo | null): string {
+  if (!namVersionInfo) {
+    return 'Checking'
+  }
+
+  if (namVersionInfo.checkStatus !== 'ok') {
+    return 'Unable to check'
+  }
+
+  if (namVersionInfo.isUpToDate === true) {
+    return 'Up to date'
+  }
+
+  if (namVersionInfo.isUpToDate === false) {
+    return 'Update available'
+  }
+
+  return 'Unknown'
+}
+
+function getDashboardDiagnosticsCards(
+  validation: BackendValidationSummary | null,
+  acceleratorDiagnostics: AcceleratorDiagnosticsSummary | null,
+  trainingLaunchDiagnostics: TrainingLaunchDiagnosticsSummary | null,
+  namVersionInfo: NamVersionInfo | null
+): DashboardDiagnosticsCard[] {
+  return [
+    {
+      title: 'Backend',
+      status: validation ? (validation.overallOk ? 'pass' : 'fail') : 'skip',
+      label: validation ? (validation.overallOk ? 'Ready' : 'Needs Fix') : 'Checking',
+      detail: validation ? (validation.overallOk ? 'Conda, Python, NAM, and nam-full are reachable.' : 'One or more backend checks failed.') : 'Waiting for backend validation.',
+      checkedAt: validation?.checkedAt ?? null
+    },
+    {
+      title: 'Accelerator',
+      status: getAcceleratorCardStatus(acceleratorDiagnostics),
+      label: acceleratorDiagnostics
+        ? acceleratorDiagnostics.status === 'ready'
+          ? 'GPU Ready'
+          : acceleratorDiagnostics.status === 'cpu_only' && !acceleratorDiagnostics.hostNvidiaSmiAvailable
+          ? 'CPU Ready'
+          : acceleratorDiagnostics.status === 'advisory'
+          ? 'Check Setup'
+          : acceleratorDiagnostics.status === 'not_checked'
+          ? 'Checking'
+          : 'Needs Fix'
+        : 'Checking',
+      detail: acceleratorDiagnostics?.headline ?? 'Waiting for accelerator diagnostics.',
+      checkedAt: acceleratorDiagnostics?.checkedAt ?? null
+    },
+    {
+      title: 'Training Launch',
+      status: getTrainingLaunchCardStatus(trainingLaunchDiagnostics),
+      label: trainingLaunchDiagnostics
+        ? trainingLaunchDiagnostics.status === 'ready'
+          ? 'Ready'
+          : trainingLaunchDiagnostics.status === 'advisory'
+          ? 'Check Setup'
+          : trainingLaunchDiagnostics.status === 'not_checked'
+          ? 'Checking'
+          : 'Blocked'
+        : 'Checking',
+      detail: trainingLaunchDiagnostics?.headline ?? 'Waiting for launch readiness diagnostics.',
+      checkedAt: trainingLaunchDiagnostics?.checkedAt ?? null
+    },
+    {
+      title: 'NAM Version',
+      status: getNamVersionCardStatus(namVersionInfo),
+      label: getNamVersionCardLabel(namVersionInfo),
+      detail: namVersionInfo?.checkStatus === 'ok'
+        ? `Installed ${namVersionInfo.installedVersion ?? 'unknown'}; latest ${namVersionInfo.latestVersion ?? 'unknown'}. A2 training requires ${MIN_A2_NAM_VERSION}+.`
+        : namVersionInfo?.errorMessage ?? 'Waiting for version check.',
+      checkedAt: null
+    }
+  ]
+}
+
+function DashboardDiagnosticsCardView({ card }: { card: DashboardDiagnosticsCard }) {
+  const color = getDashboardStatusColor(card.status)
+
+  return (
+    <div style={{
+      border: `2px solid ${color}`,
+      backgroundColor: 'rgba(9, 9, 11, 0.55)',
+      padding: '12px',
+      minHeight: '118px',
+      display: 'grid',
+      alignContent: 'space-between',
+      gap: '8px'
+    }}>
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'baseline', marginBottom: '8px' }}>
+          <p style={{ color: 'var(--text-steel)', fontSize: '10px', letterSpacing: '0.12em', textTransform: 'uppercase' }}>{card.title}</p>
+          <span style={{ color, fontFamily: 'var(--font-arcade)', fontSize: '16px' }}>{getDashboardStatusLabel(card.status)}</span>
+        </div>
+        <p style={{ color, fontFamily: 'var(--font-arcade)', fontSize: '22px', lineHeight: 1.05, marginBottom: '6px' }}>{card.label}</p>
+        <p style={{ color: 'var(--text-steel)', fontSize: '12px', lineHeight: 1.35 }}>{card.detail}</p>
+      </div>
+      <p style={{ color: 'var(--text-steel)', fontSize: '10px' }}>{card.checkedAt ? `Checked ${new Date(card.checkedAt).toLocaleTimeString()}` : 'Not checked yet'}</p>
+    </div>
+  )
 }
 
 function Dashboard() {
   const { 
     validation, 
     acceleratorDiagnostics, 
+    trainingLaunchDiagnostics,
+    namVersionInfo,
+    isLoading,
+    isAcceleratorDiagnosticsLoading,
+    isTrainingLaunchDiagnosticsLoading,
+    isNamVersionInfoLoading,
+    validateBackend,
     loadAcceleratorDiagnostics, 
+    loadTrainingLaunchDiagnostics,
+    loadNamVersionInfo,
     drafts, 
     queue,
     presets,
@@ -121,8 +237,12 @@ function Dashboard() {
   const [logContents, setLogContents] = useState<Record<string, string>>({})
   const [loadingLogs, setLoadingLogs] = useState<Set<string>>(new Set())
 
-  const backendSummary = getBackendSummary(validation)
-  const acceleratorSummary = getAcceleratorSummary(acceleratorDiagnostics)
+  const diagnosticsCards = getDashboardDiagnosticsCards(
+    validation,
+    acceleratorDiagnostics,
+    trainingLaunchDiagnostics,
+    namVersionInfo
+  )
 
   const trainingJobs = queue.filter(r => r.status === 'preparing' || r.status === 'running' || r.status === 'stopping')
   const queuedJobs = queue.filter(r => r.status === 'queued' || r.status === 'validating')
@@ -130,13 +250,37 @@ function Dashboard() {
   const errorJobs = queue.filter(r => r.status === 'failed' || r.status === 'canceled')
 
   useEffect(() => {
-    if (!acceleratorDiagnostics) {
+    if (!validation && !isLoading) {
+      void validateBackend()
+    }
+    if (!acceleratorDiagnostics && !isAcceleratorDiagnosticsLoading) {
       void loadAcceleratorDiagnostics()
+    }
+    if (!trainingLaunchDiagnostics && !isTrainingLaunchDiagnosticsLoading) {
+      void loadTrainingLaunchDiagnostics()
+    }
+    if (!namVersionInfo && !isNamVersionInfoLoading) {
+      void loadNamVersionInfo()
     }
     if (presets.length === 0) {
       void loadPresets()
     }
-  }, [acceleratorDiagnostics, loadAcceleratorDiagnostics, presets.length, loadPresets])
+  }, [
+    acceleratorDiagnostics,
+    isAcceleratorDiagnosticsLoading,
+    isLoading,
+    isNamVersionInfoLoading,
+    isTrainingLaunchDiagnosticsLoading,
+    loadAcceleratorDiagnostics,
+    loadNamVersionInfo,
+    loadPresets,
+    loadTrainingLaunchDiagnostics,
+    namVersionInfo,
+    presets.length,
+    trainingLaunchDiagnostics,
+    validation,
+    validateBackend
+  ])
 
   const stats = [
     { label: 'Drafts', count: drafts.length, color: 'var(--text-steel)' },
@@ -265,66 +409,14 @@ function Dashboard() {
 
       <div className="panel" style={{ marginBottom: '16px' }}>
         <div className="panel-header">
-          <h3>Backend Status</h3>
+          <h3>Diagnostics</h3>
         </div>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: '12px'
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '10px'
         }}>
-          <div style={{
-            padding: '14px',
-            border: `1px solid ${backendSummary.color}`,
-            backgroundColor: 'rgba(9, 9, 11, 0.45)'
-          }}>
-            <p style={{
-              color: 'var(--text-steel)',
-              fontSize: '11px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.12em',
-              marginBottom: '8px'
-            }}>
-              Backend
-            </p>
-            <p style={{
-              color: backendSummary.color,
-              fontFamily: 'var(--font-arcade)',
-              fontSize: '24px',
-              marginBottom: '8px'
-            }}>
-              {backendSummary.label}
-            </p>
-            <p style={{ color: 'var(--text-steel)', fontSize: '13px', lineHeight: '1.5' }}>
-              {backendSummary.detail}
-            </p>
-          </div>
-
-          <div style={{
-            padding: '14px',
-            border: `1px solid ${acceleratorSummary.color}`,
-            backgroundColor: 'rgba(9, 9, 11, 0.45)'
-          }}>
-            <p style={{
-              color: 'var(--text-steel)',
-              fontSize: '11px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.12em',
-              marginBottom: '8px'
-            }}>
-              Accelerator
-            </p>
-            <p style={{
-              color: acceleratorSummary.color,
-              fontFamily: 'var(--font-arcade)',
-              fontSize: '24px',
-              marginBottom: '8px'
-            }}>
-              {acceleratorSummary.label}
-            </p>
-            <p style={{ color: 'var(--text-steel)', fontSize: '13px', lineHeight: '1.5' }}>
-              {acceleratorSummary.detail}
-            </p>
-          </div>
+          {diagnosticsCards.map((card) => <DashboardDiagnosticsCardView key={card.title} card={card} />)}
         </div>
       </div>
 

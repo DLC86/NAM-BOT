@@ -2288,7 +2288,7 @@ export async function getNamVersionInfo(settings: AppSettings): Promise<NamVersi
   }
 }
 
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   const aParts = a.split('.').map((part) => parseInt(part.replace(/[^0-9]/g, ''), 10) || 0)
   const bParts = b.split('.').map((part) => parseInt(part.replace(/[^0-9]/g, ''), 10) || 0)
   

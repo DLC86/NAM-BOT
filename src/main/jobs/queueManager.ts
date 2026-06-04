@@ -14,7 +14,7 @@ import {
 } from 'fs'
 import log from 'electron-log/main'
 import { v4 as uuidv4 } from 'uuid'
-import { inspectTorchRuntime, runNamFull, TorchRuntimeSummary, TrainingProcessController } from '../backend/adapter'
+import { compareVersions, detectNamVersion, inspectTorchRuntime, runNamFull, TorchRuntimeSummary, TrainingProcessController } from '../backend/adapter'
 import { buildJobConfigs } from '../config/configBuilder'
 import { getTrainingPresetById } from '../persistence/presetStore'
 import {
@@ -24,8 +24,10 @@ import {
   JobSpec,
   JobStatus,
   JobTerminalProgress,
+  MIN_A2_NAM_VERSION,
   buildNamMetadataPatch,
   defaultJobSpec,
+  isA2TrainingPreset,
   normalizeJobSpec
 } from '../types/jobs'
 import { AppSettings } from '../types'
@@ -1122,6 +1124,34 @@ export class QueueManager extends EventEmitter {
     this.settings = settings
   }
 
+  private async assertTrainingRequirements(jobSpec: JobSpec): Promise<void> {
+    if (!this.settings) {
+      throw new Error('Cannot validate training requirements because settings are not loaded.')
+    }
+
+    const preset = getTrainingPresetById(jobSpec.presetId)
+    if (!isA2TrainingPreset(preset)) {
+      return
+    }
+
+    const installedVersion = await detectNamVersion(this.settings)
+    if (!installedVersion) {
+      throw new Error(
+        `A2 training requires neural-amp-modeler ${MIN_A2_NAM_VERSION} or newer, but NAM-BOT could not detect the installed NAM version. Run pip install --upgrade "neural-amp-modeler>=${MIN_A2_NAM_VERSION}" in the configured environment, then re-check Diagnostics.`
+      )
+    }
+
+    if (compareVersions(installedVersion, MIN_A2_NAM_VERSION) < 0) {
+      throw new Error(
+        `A2 training requires neural-amp-modeler ${MIN_A2_NAM_VERSION} or newer. Installed: ${installedVersion}. Run pip install --upgrade "neural-amp-modeler>=${MIN_A2_NAM_VERSION}" in the configured environment, then re-check Diagnostics.`
+      )
+    }
+  }
+
+  async validateJobCanTrain(jobSpec: JobSpec): Promise<void> {
+    await this.assertTrainingRequirements(jobSpec)
+  }
+
   getQueue(): JobRuntimeState[] {
     return [...this.queue]
   }
@@ -1446,6 +1476,7 @@ export class QueueManager extends EventEmitter {
     }
 
     try {
+      await this.assertTrainingRequirements(jobSpec)
       this.appendUserMessage(runtime, 'Generating NAM training configuration files...')
       const preset = getTrainingPresetById(jobSpec.presetId)
       const configPaths = buildJobConfigs(jobSpec, workspaceDir, preset)

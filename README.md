@@ -31,6 +31,7 @@ The goal is not to replace the deeper hands-on side of NAM. It is to give you a 
 NAM-BOT tries to make local training smoother by giving you:
 
 - A desktop UI for creating, queueing, and monitoring NAM training jobs
+- A2 Packed WaveNet local training as the default preset, with A1 presets still available for older workflows
 - Reusable presets you can export, import, and share with creator metadata
 - Guided setup help for people who are newer to the NAM and Python side
 - Diagnostics that explain backend, accelerator, and training launch problems in plain language
@@ -39,6 +40,7 @@ NAM-BOT tries to make local training smoother by giving you:
 ## What You Can Do
 
 - Queue multiple training jobs and track status from a dashboard
+- Use dashboard diagnostics cards for Backend, Accelerator, Training Launch, and NAM Version status at a glance
 - Save and reuse training presets across runs
 - Export and import presets for sharing, including creator name and URL metadata
 - Point the app at either a Conda environment or a direct Python executable
@@ -52,7 +54,8 @@ NAM-BOT tries to make local training smoother by giving you:
 
 - Windows 10 or Windows 11, x64
 - [Miniconda or Anaconda](https://www.anaconda.com/download), unless you already run NAM another way
-- A Python environment with `neural-amp-modeler` 0.12.3 or newer installed
+- A Python environment with `neural-amp-modeler` 0.13.0 or newer installed
+- `neural-amp-modeler` 0.13.0 or newer is required for A2 local training
 - NVIDIA GPU recommended if you want faster local training
 
 **macOS**
@@ -94,7 +97,7 @@ If you do not already have a local NAM environment, NAM-BOT will help walk you t
 
 1. Install Miniconda or Anaconda.
 2. Create a Conda environment named `nam`.
-3. Install `neural-amp-modeler` 0.12.3 or newer into that environment.
+3. Install `neural-amp-modeler` 0.13.0 or newer into that environment.
 4. Open NAM-BOT and let Diagnostics confirm the setup.
 
 On macOS, use Terminal for those commands. On Apple Silicon, choose the Apple Silicon Miniconda installer and treat MPS as the expected accelerator path.
@@ -106,7 +109,7 @@ If you want to build the environment by hand, these are the commands NAM-BOT exp
 ```bash
 conda create -n nam python=3.11 -y
 conda activate nam
-pip install --upgrade "neural-amp-modeler>=0.12.3"
+pip install --upgrade "neural-amp-modeler>=0.13.0"
 ```
 
 NAM-BOT performs a metadata-only safety check before importing NAM or Lightning. If the selected environment contains the known compromised Lightning releases `2.6.2` or `2.6.3`, NAM-BOT blocks validation and training until the environment is repaired.
@@ -117,7 +120,7 @@ To check and repair an existing environment:
 pip show lightning pytorch-lightning
 pip uninstall -y lightning pytorch-lightning pytorch_lightning
 pip install "pytorch-lightning<=2.6.1"
-pip install --upgrade "neural-amp-modeler>=0.12.3"
+pip install --upgrade "neural-amp-modeler>=0.13.0"
 ```
 
 If Lightning `2.6.2` or `2.6.3` was installed and imported in that environment, treat it as potentially compromised and rotate credentials used on that machine.
@@ -176,7 +179,7 @@ pip install --no-cache-dir https://repo.radeon.com/rocm/windows/rocm-rel-7.2/tor
 4. Install Neural Amp Modeler:
 
 ```bash
-pip install --upgrade "neural-amp-modeler>=0.12.3"
+pip install --upgrade "neural-amp-modeler>=0.13.0"
 ```
 
 5. Verify ROCm installation:
@@ -212,7 +215,7 @@ It checks a few predetermined paths first, including:
 - Whether the host machine itself exposes expected GPU hardware when accelerator checks apply
 - Whether the selected environment can launch through the same PTY path used by real training jobs
 
-Diagnostics now summarizes the environment with compact tiles, prioritizes the most important fix in the Action Center, and keeps the detailed backend, accelerator, Training Launch, and NAM version checks in one matrix. When it spots a likely GPU, environment, or launch-path problem, it gives you ready-to-paste commands for the most common fix paths. That covers a lot of the usual Windows, Conda, torch mismatch, and PTY launch issues without making you search around manually.
+Diagnostics now summarizes the environment with compact tiles, prioritizes the most important fix in the Action Center, and keeps the detailed backend, accelerator, Training Launch, and NAM version checks in one matrix. The NAM version check calls out that A2 training requires `neural-amp-modeler>=0.13.0`. When it spots a likely GPU, environment, or launch-path problem, it gives you ready-to-paste commands for the most common fix paths. That covers a lot of the usual Windows, Conda, torch mismatch, and PTY launch issues without making you search around manually.
 
 If the built-in guidance is not enough, the Diagnostics panel can also generate a ready-to-paste troubleshooting prompt and raw diagnostics export with system and environment details included. You can drop that into an LLM like Claude or ChatGPT and get much more targeted help without having to manually explain your setup from scratch.
 
@@ -222,7 +225,8 @@ If the built-in guidance is not enough, the Diagnostics panel can also generate 
 2. Drag in your source audio or create a new job manually.
 3. Save the job draft.
 4. Queue it.
-5. Monitor progress from the Dashboard and Jobs screens.
+5. Watch the Queue button switch to `Queueing...` while NAM-BOT validates and freezes the draft.
+6. Monitor progress from the Dashboard and Jobs screens.
 
 ## Preset Sharing
 
@@ -247,6 +251,7 @@ Presets library:
 ## Documentation
 
 - [Diagnostics Screen](./docs/diagnostics.md)
+- [Dashboard](./docs/dashboard.md)
 - [Settings Guide](./docs/settings.md)
 - [Jobs System](./docs/jobs-system.md)
 - [Presets System](./docs/presets-system.md)

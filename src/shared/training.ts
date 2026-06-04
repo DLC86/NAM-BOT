@@ -12,8 +12,9 @@ export type JobStatus =
 export type JobStopMode = 'graceful' | 'force'
 
 export type PresetCategory = 'quality' | 'speed' | 'architecture' | 'custom'
-export type ModelFamily = 'WaveNet' | 'LSTM'
-export type ArchitectureSize = 'standard' | 'lite' | 'feather' | 'nano' | 'custom'
+export type NamArchitectureVersion = 'a1' | 'a2' | 'custom'
+export type ModelFamily = 'WaveNet' | 'PackedWaveNet' | 'LSTM'
+export type ArchitectureSize = 'standard' | 'lite' | 'feather' | 'nano' | 'packed' | 'custom'
 export type NamGearType = 'amp' | 'pedal' | 'pedal_amp' | 'amp_cab' | 'amp_pedal_cab' | 'preamp' | 'studio'
 export type NamToneType = 'clean' | 'overdrive' | 'crunch' | 'hi_gain' | 'fuzz'
 
@@ -90,6 +91,7 @@ export interface JobSpec {
 }
 
 export interface TrainingPresetValues {
+  architectureVersion: NamArchitectureVersion
   modelFamily: ModelFamily
   architectureSize: ArchitectureSize
   epochs: number
@@ -98,6 +100,9 @@ export interface TrainingPresetValues {
   learningRateDecay: number
   ny: number
   fitMrstft: boolean
+  mrstftWeight: number
+  weightDecay: number
+  outputNormalizeRmsDb: number | null
 }
 
 export interface TrainingPresetExpertBlocks {
@@ -191,18 +196,31 @@ export const NAM_TONE_TYPE_OPTIONS: Array<{ value: NamToneType; label: string }>
   { value: 'fuzz', label: 'Fuzz' }
 ]
 
-export const DEFAULT_PRESET_ID = 'wavenet-standard'
+export const DEFAULT_PRESET_ID = 'a2-packed-wavenet'
+export const A1_STANDARD_PRESET_ID = 'wavenet-standard'
 export const LEGACY_LSTM_PRESET_ID = 'compat-lstm-standard'
+export const MIN_A2_NAM_VERSION = '0.13.0'
 
 export const DEFAULT_TRAINING_PRESET_VALUES: TrainingPresetValues = {
-  modelFamily: 'WaveNet',
-  architectureSize: 'standard',
+  architectureVersion: 'a2',
+  modelFamily: 'PackedWaveNet',
+  architectureSize: 'packed',
   epochs: 100,
   batchSize: 16,
   learningRate: 0.004,
-  learningRateDecay: 0.007,
+  learningRateDecay: 0.006,
   ny: 8192,
-  fitMrstft: true
+  fitMrstft: true,
+  mrstftWeight: 0.0005,
+  weightDecay: 3.17e-7,
+  outputNormalizeRmsDb: -18
+}
+
+export const A1_TRAINING_PRESET_VALUE_OVERRIDES: Pick<TrainingPresetValues, 'architectureVersion' | 'mrstftWeight' | 'weightDecay' | 'outputNormalizeRmsDb'> = {
+  architectureVersion: 'a1',
+  mrstftWeight: 0.0002,
+  weightDecay: 0,
+  outputNormalizeRmsDb: null
 }
 
 export const defaultJobSpec: Omit<JobSpec, 'id' | 'createdAt' | 'updatedAt'> = {
@@ -252,6 +270,13 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
+function asNullableFiniteNumber(value: unknown, fallback: number | null): number | null {
+  if (value === null) {
+    return null
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
 function asString(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback
 }
@@ -263,6 +288,47 @@ function asOptionalTrimmedString(value: unknown): string | undefined {
 
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : undefined
+}
+
+function normalizeArchitectureVersion(value: unknown): NamArchitectureVersion | null {
+  return value === 'a1' || value === 'a2' || value === 'custom' ? value : null
+}
+
+function normalizeModelFamily(value: unknown): ModelFamily {
+  if (value === 'LSTM' || value === 'PackedWaveNet') {
+    return value
+  }
+  return 'WaveNet'
+}
+
+function normalizeArchitectureSize(value: unknown): ArchitectureSize {
+  return value === 'lite'
+    || value === 'feather'
+    || value === 'nano'
+    || value === 'packed'
+    || value === 'custom'
+    ? value
+    : 'standard'
+}
+
+function inferArchitectureVersion(values: Record<string, unknown>, expert: TrainingPresetExpertBlocks): NamArchitectureVersion {
+  const expertNet = isRecord(expert.model) && isRecord(expert.model.net) ? expert.model.net : null
+  const netName = typeof expertNet?.name === 'string' ? expertNet.name : values.modelFamily
+
+  if (netName === 'PackedWaveNet') {
+    return 'a2'
+  }
+
+  if (netName !== 'WaveNet' && netName !== 'LSTM') {
+    return 'custom'
+  }
+
+  return 'a1'
+}
+
+function getExpertNetName(expert: TrainingPresetExpertBlocks): string | null {
+  const expertNet = isRecord(expert.model) && isRecord(expert.model.net) ? expert.model.net : null
+  return typeof expertNet?.name === 'string' ? expertNet.name : null
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
@@ -362,7 +428,7 @@ export function slugifyPresetName(value: string): string {
 }
 
 export function buildWaveNetConfig(size: ArchitectureSize): Record<string, unknown> {
-  const configs: Record<Exclude<ArchitectureSize, 'custom'>, Record<string, unknown>> = {
+  const configs: Record<'standard' | 'lite' | 'feather' | 'nano', Record<string, unknown>> = {
     standard: {
       layers_configs: [
         {
@@ -473,7 +539,7 @@ export function buildWaveNetConfig(size: ArchitectureSize): Record<string, unkno
     }
   }
 
-  if (size === 'custom') {
+  if (size === 'custom' || size === 'packed') {
     return cloneJson(configs.standard)
   }
 
@@ -481,7 +547,7 @@ export function buildWaveNetConfig(size: ArchitectureSize): Record<string, unkno
 }
 
 export function buildLstmConfig(size: ArchitectureSize): Record<string, unknown> {
-  const configs: Record<Exclude<ArchitectureSize, 'custom'>, Record<string, unknown>> = {
+  const configs: Record<'standard' | 'lite' | 'feather' | 'nano', Record<string, unknown>> = {
     standard: {
       num_layers: 1,
       hidden_size: 24,
@@ -508,11 +574,119 @@ export function buildLstmConfig(size: ArchitectureSize): Record<string, unknown>
     }
   }
 
-  if (size === 'custom') {
+  if (size === 'custom' || size === 'packed') {
     return cloneJson(configs.standard)
   }
 
   return cloneJson(configs[size])
+}
+
+function buildA2SubmodelConfig(channels: number): Record<string, unknown> {
+  return {
+    layers_configs: [
+      {
+        input_size: 1,
+        condition_size: 1,
+        channels,
+        kernel_sizes: [
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          15,
+          15,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6
+        ],
+        dilations: [
+          1,
+          3,
+          7,
+          17,
+          41,
+          101,
+          239,
+          1,
+          3,
+          7,
+          17,
+          41,
+          101,
+          239,
+          1,
+          13,
+          1,
+          3,
+          7,
+          17,
+          41,
+          101,
+          239
+        ],
+        activation: 'LeakyReLU',
+        gated: false,
+        head: {
+          out_channels: 1,
+          kernel_size: 16,
+          bias: true
+        }
+      }
+    ],
+    head_scale: 0.01
+  }
+}
+
+export function buildA2PackedModelConfig(values: TrainingPresetValues = DEFAULT_TRAINING_PRESET_VALUES): Record<string, unknown> {
+  const schedulerGamma = Math.max(0, 1 - values.learningRateDecay)
+  return {
+    net: {
+      name: 'PackedWaveNet',
+      config: {
+        submodels: [
+          {
+            name: 'channels_3',
+            config: buildA2SubmodelConfig(3)
+          },
+          {
+            name: 'channels_8',
+            config: buildA2SubmodelConfig(8)
+          }
+        ],
+        export: {
+          container_max_values: 'uniform'
+        }
+      }
+    },
+    loss: {
+      val_loss: 'esr',
+      ...(values.mrstftWeight > 0 ? { mrstft_weight: values.mrstftWeight } : {})
+    },
+    optimizer: {
+      lr: values.learningRate,
+      ...(values.weightDecay > 0 ? { weight_decay: values.weightDecay } : {})
+    },
+    lr_scheduler: {
+      class: 'ExponentialLR',
+      kwargs: {
+        gamma: schedulerGamma
+      }
+    }
+  }
 }
 
 function computeLockedJobFields(expert: TrainingPresetExpertBlocks): Array<'epochs' | 'latencySamples'> {
@@ -575,27 +749,35 @@ export function normalizeTrainingPreset(value: unknown): TrainingPresetFile {
 
   const partial = value as Record<string, unknown>
   const rawValues = isRecord(partial.values) ? partial.values : {}
-  const values: TrainingPresetValues = {
-    modelFamily: rawValues.modelFamily === 'LSTM' ? 'LSTM' : 'WaveNet',
-    architectureSize:
-      rawValues.architectureSize === 'lite'
-      || rawValues.architectureSize === 'feather'
-      || rawValues.architectureSize === 'nano'
-      || rawValues.architectureSize === 'custom'
-        ? rawValues.architectureSize
-        : 'standard',
-    epochs: asPositiveInt(rawValues.epochs, DEFAULT_TRAINING_PRESET_VALUES.epochs),
-    batchSize: asPositiveInt(rawValues.batchSize, DEFAULT_TRAINING_PRESET_VALUES.batchSize),
-    learningRate: asFiniteNumber(rawValues.learningRate, DEFAULT_TRAINING_PRESET_VALUES.learningRate),
-    learningRateDecay: asFiniteNumber(rawValues.learningRateDecay, DEFAULT_TRAINING_PRESET_VALUES.learningRateDecay),
-    ny: asPositiveInt(rawValues.ny, DEFAULT_TRAINING_PRESET_VALUES.ny),
-    fitMrstft: asBoolean(rawValues.fitMrstft, DEFAULT_TRAINING_PRESET_VALUES.fitMrstft)
-  }
   const rawExpert = isRecord(partial.expert) ? partial.expert : {}
   const expert: TrainingPresetExpertBlocks = {
     data: isRecord(rawExpert.data) ? cloneRecord(rawExpert.data) : undefined,
     model: normalizeExpertModelShape(rawExpert.model),
     learning: isRecord(rawExpert.learning) ? cloneRecord(rawExpert.learning) : undefined
+  }
+  const expertNetName = getExpertNetName(expert)
+  const inferredArchitectureVersion = inferArchitectureVersion(rawValues, expert)
+  const architectureVersion = expertNetName
+    ? inferredArchitectureVersion
+    : normalizeArchitectureVersion(rawValues.architectureVersion) ?? inferredArchitectureVersion
+  const values: TrainingPresetValues = {
+    architectureVersion,
+    modelFamily: expertNetName ? normalizeModelFamily(expertNetName) : normalizeModelFamily(rawValues.modelFamily),
+    architectureSize: expertNetName === 'PackedWaveNet' ? 'packed' : normalizeArchitectureSize(rawValues.architectureSize),
+    epochs: asPositiveInt(rawValues.epochs, DEFAULT_TRAINING_PRESET_VALUES.epochs),
+    batchSize: asPositiveInt(rawValues.batchSize, DEFAULT_TRAINING_PRESET_VALUES.batchSize),
+    learningRate: asFiniteNumber(rawValues.learningRate, DEFAULT_TRAINING_PRESET_VALUES.learningRate),
+    learningRateDecay: asFiniteNumber(rawValues.learningRateDecay, DEFAULT_TRAINING_PRESET_VALUES.learningRateDecay),
+    ny: asPositiveInt(rawValues.ny, DEFAULT_TRAINING_PRESET_VALUES.ny),
+    fitMrstft: asBoolean(rawValues.fitMrstft, DEFAULT_TRAINING_PRESET_VALUES.fitMrstft),
+    mrstftWeight: asFiniteNumber(
+      rawValues.mrstftWeight,
+      asBoolean(rawValues.fitMrstft, DEFAULT_TRAINING_PRESET_VALUES.fitMrstft)
+        ? (architectureVersion === 'a2' ? DEFAULT_TRAINING_PRESET_VALUES.mrstftWeight : 0.0002)
+        : 0
+    ),
+    weightDecay: asFiniteNumber(rawValues.weightDecay, architectureVersion === 'a2' ? DEFAULT_TRAINING_PRESET_VALUES.weightDecay : 0),
+    outputNormalizeRmsDb: asNullableFiniteNumber(rawValues.outputNormalizeRmsDb, architectureVersion === 'a2' ? DEFAULT_TRAINING_PRESET_VALUES.outputNormalizeRmsDb : null)
   }
   const author = normalizeTrainingPresetAuthor(partial.author)
   const origin = normalizeTrainingPresetOrigin(partial.origin)
@@ -750,6 +932,30 @@ export function createImportedPreset(rawJson: string, nameHint?: string): Import
     }
   }
 
+  if (isCanonicalModelOverride(parsed)) {
+    const net = isRecord(parsed.net) ? parsed.net : null
+    const netName = typeof net?.name === 'string' ? net.name : 'WaveNet'
+    const architectureVersion = netName === 'PackedWaveNet' ? 'a2' : netName === 'WaveNet' || netName === 'LSTM' ? 'a1' : 'custom'
+    return {
+      kind: 'expert-config',
+      preset: createTrainingPreset({
+        name: nameHint || 'Imported Model Config',
+        description: 'Created from an imported NAM model config.',
+        category: 'custom',
+        values: {
+          ...DEFAULT_TRAINING_PRESET_VALUES,
+          ...(architectureVersion === 'a1' ? A1_TRAINING_PRESET_VALUE_OVERRIDES : {}),
+          architectureVersion,
+          modelFamily: normalizeModelFamily(netName),
+          architectureSize: netName === 'PackedWaveNet' ? 'packed' : 'custom'
+        },
+        expert: {
+          model: parsed
+        }
+      })
+    }
+  }
+
   if (Array.isArray(parsed.layers_configs)) {
     return {
       kind: 'wavenet-snippet',
@@ -759,6 +965,7 @@ export function createImportedPreset(rawJson: string, nameHint?: string): Import
         category: 'custom',
         values: {
           ...DEFAULT_TRAINING_PRESET_VALUES,
+          ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
           modelFamily: 'WaveNet',
           architectureSize: 'custom'
         },
@@ -783,10 +990,13 @@ export function createImportedPreset(rawJson: string, nameHint?: string): Import
         category: 'custom',
         values: {
           ...DEFAULT_TRAINING_PRESET_VALUES,
+          ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
           modelFamily: 'LSTM',
           architectureSize: 'custom',
           learningRate: 0.01,
-          learningRateDecay: 0.005
+          learningRateDecay: 0.005,
+          fitMrstft: false,
+          mrstftWeight: 0
         },
         expert: {
           model: {
@@ -801,16 +1011,32 @@ export function createImportedPreset(rawJson: string, nameHint?: string): Import
   }
 
   if (parsed.data || parsed.model || parsed.learning) {
+    const expert: TrainingPresetExpertBlocks = {
+      data: isRecord(parsed.data) ? parsed.data : undefined,
+      model: isRecord(parsed.model) ? normalizeExpertModelShape(parsed.model) : undefined,
+      learning: isRecord(parsed.learning) ? parsed.learning : undefined
+    }
+    const architectureVersion = inferArchitectureVersion({}, expert)
+    const net = isRecord(expert.model) && isRecord(expert.model.net) ? expert.model.net : null
+    const netName = typeof net?.name === 'string' ? net.name : undefined
+
     return {
       kind: 'expert-config',
       preset: createTrainingPreset({
         name: nameHint || 'Imported Expert Config',
         description: 'Created from imported raw NAM config blocks.',
         category: 'custom',
+        values: {
+          ...DEFAULT_TRAINING_PRESET_VALUES,
+          ...(architectureVersion === 'a1' ? A1_TRAINING_PRESET_VALUE_OVERRIDES : {}),
+          architectureVersion,
+          ...(netName ? { modelFamily: normalizeModelFamily(netName) } : {}),
+          architectureSize: netName === 'PackedWaveNet' ? 'packed' : netName ? 'custom' : DEFAULT_TRAINING_PRESET_VALUES.architectureSize
+        },
         expert: {
-          data: isRecord(parsed.data) ? parsed.data : undefined,
-          model: isRecord(parsed.model) ? parsed.model : undefined,
-          learning: isRecord(parsed.learning) ? parsed.learning : undefined
+          data: expert.data,
+          model: expert.model,
+          learning: expert.learning
         }
       })
     }
@@ -823,16 +1049,33 @@ export function buildBuiltInPresets(): TrainingPresetFile[] {
   return [
     createTrainingPreset({
       id: DEFAULT_PRESET_ID,
-      name: 'Standard WaveNet',
-      description: 'Official NAM WaveNet standard architecture.',
+      name: 'A2 Packed WaveNet',
+      description: 'Official NAM A2 packed architecture. Trains one model that contains A2-Full and A2-Lite submodels.',
       category: 'quality',
       builtIn: true,
       readOnly: true,
       visible: true,
       values: {
         ...DEFAULT_TRAINING_PRESET_VALUES,
+        architectureVersion: 'a2',
+        modelFamily: 'PackedWaveNet',
+        architectureSize: 'packed'
+      }
+    }),
+    createTrainingPreset({
+      id: A1_STANDARD_PRESET_ID,
+      name: 'Standard WaveNet',
+      description: 'NAM A1 WaveNet standard architecture.',
+      category: 'quality',
+      builtIn: true,
+      readOnly: true,
+      visible: true,
+      values: {
+        ...DEFAULT_TRAINING_PRESET_VALUES,
+        ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
         modelFamily: 'WaveNet',
-        architectureSize: 'standard'
+        architectureSize: 'standard',
+        learningRateDecay: 0.007
       }
     }),
     createTrainingPreset({
@@ -845,8 +1088,10 @@ export function buildBuiltInPresets(): TrainingPresetFile[] {
       visible: true,
       values: {
         ...DEFAULT_TRAINING_PRESET_VALUES,
+        ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
         modelFamily: 'WaveNet',
-        architectureSize: 'lite'
+        architectureSize: 'lite',
+        learningRateDecay: 0.007
       }
     }),
     createTrainingPreset({
@@ -859,8 +1104,10 @@ export function buildBuiltInPresets(): TrainingPresetFile[] {
       visible: true,
       values: {
         ...DEFAULT_TRAINING_PRESET_VALUES,
+        ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
         modelFamily: 'WaveNet',
-        architectureSize: 'feather'
+        architectureSize: 'feather',
+        learningRateDecay: 0.007
       }
     }),
     createTrainingPreset({
@@ -873,8 +1120,10 @@ export function buildBuiltInPresets(): TrainingPresetFile[] {
       visible: true,
       values: {
         ...DEFAULT_TRAINING_PRESET_VALUES,
+        ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
         modelFamily: 'WaveNet',
-        architectureSize: 'nano'
+        architectureSize: 'nano',
+        learningRateDecay: 0.007
       }
     }),
     createTrainingPreset({
@@ -887,11 +1136,13 @@ export function buildBuiltInPresets(): TrainingPresetFile[] {
       visible: false,
       values: {
         ...DEFAULT_TRAINING_PRESET_VALUES,
+        ...A1_TRAINING_PRESET_VALUE_OVERRIDES,
         modelFamily: 'LSTM',
         architectureSize: 'standard',
         learningRate: 0.01,
         learningRateDecay: 0.005,
-        fitMrstft: false
+        fitMrstft: false,
+        mrstftWeight: 0
       }
     })
   ]
@@ -902,6 +1153,18 @@ export const builtInTrainingPresets = buildBuiltInPresets()
 export function getBuiltInPreset(presetId: string | null | undefined): TrainingPresetFile {
   const preset = builtInTrainingPresets.find((entry) => entry.id === presetId)
   return preset ?? builtInTrainingPresets.find((entry) => entry.id === DEFAULT_PRESET_ID) ?? builtInTrainingPresets[0]
+}
+
+export function getPresetArchitectureVersion(preset: TrainingPresetFile): NamArchitectureVersion {
+  return preset.values.architectureVersion
+}
+
+export function isA2TrainingPreset(preset: TrainingPresetFile): boolean {
+  return getPresetArchitectureVersion(preset) === 'a2'
+}
+
+export function formatPresetArchitectureTag(preset: TrainingPresetFile): string {
+  return getPresetArchitectureVersion(preset).toUpperCase()
 }
 
 export function buildNamMetadataPatch(metadata: NamEmbeddedMetadata): Record<string, unknown> {

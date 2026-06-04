@@ -47,10 +47,12 @@ Draft jobs are editable saved jobs that have not been frozen into the queue yet.
 - Saving a new job creates a backend draft through `jobs:createDraft`.
 - Saving an existing draft updates it through `jobs:saveDraft`.
 - Draft cards expose `Edit`, `Queue`, `Copy`, and `Delete`.
+- Draft, queue, training, and finished cards show the selected preset's architecture tag: `A2`, `A1`, or `CUSTOM`.
 - Draft cards also expose `Create Batch`, which uses that draft as a template for multiple output audio files.
 - `Queue All` enqueues every valid draft and skips drafts missing required fields.
+- While a draft is being queued, its Queue button changes to `Queueing...` and draft actions are disabled to prevent duplicate enqueue clicks.
 - Draft delete confirmation includes a `Don't show this again` option that bypasses future draft-delete confirmations on that device.
-- New jobs remember the last-used preset, the last-used output root mode, the last-used exported-model naming preferences, and a small set of low-risk reusable capture fields.
+- New jobs default to the A2 preset and remember the last-used output root mode, the last-used exported-model naming preferences, and a small set of low-risk reusable capture fields.
 
 Drafts are where users can iterate safely before they commit a run to the queue.
 
@@ -92,7 +94,7 @@ The Jobs page supports dragging output audio files directly onto the main panel.
 - the NAM model name defaults to the output filename without extension
 - the output root defaults to the dropped file's directory
 - the input audio defaults to the bundled NAM training signal when available
-- the preset defaults to the last-used visible preset, then the default preset, then the first visible preset
+- the preset defaults to the A2 default preset, then the first visible preset
 
 This is intended to speed up common “I already have my re-amped captures on disk” workflows.
 
@@ -169,7 +171,11 @@ Queued jobs appear in their own section.
 - `Unqueue All` restores waiting queue items back into drafts
 - individual queued jobs can also be unqueued one at a time
 
-The queue UI shows the queued list in reverse visual order compared to the internal logical queue so the “next up” behavior feels natural in the interface.
+The queue UI shows the queued list in reverse visual order compared to the internal logical queue so the "next up" behavior feels natural in the interface.
+
+- A2 jobs are preflighted before enqueue. If the selected NAM environment is missing or older than `neural-amp-modeler` `0.13.0`, enqueue is blocked with an upgrade command.
+- Batch enqueue preflights all selected drafts before adding any of them to the queue so partial A2 batch enqueue does not occur.
+- The renderer shows an immediate queueing state while this preflight runs so slow validation does not look like a missed click.
 
 ### Training View
 
@@ -334,6 +340,15 @@ When a draft is enqueued:
 
 This prevents a user from accidentally changing the meaning of an already queued run.
 
+### A2 Version Gate
+
+NAM-BOT now defaults to local A2 training through the `a2-packed-wavenet` preset. A2 requires `neural-amp-modeler>=0.13.0` because earlier local `nam-full` installs do not include the required PackedWaveNet training path.
+
+- enqueue checks the selected preset's architecture tag before freezing the job
+- A2 jobs call NAM version detection and compare the installed version to `0.13.0`
+- the same A2 gate runs again before training starts, protecting persisted queue items created before an environment downgrade
+- A1 and custom presets are not blocked by this A2-specific minimum version gate
+
 ### Unqueue And Retry
 
 - `Unqueue` restores a queued item back into drafts.
@@ -413,7 +428,7 @@ Jobs depend on presets but should stay smaller and more tactical than presets.
 
 - presets define the base architecture and training recipe
 - jobs point at one preset and override only a few run-specific fields
-- the last-used preset helps seed faster new-job creation
+- the default A2 preset keeps new-job creation aligned with the current NAM training path
 - preset locking rules can make job fields read-only when the preset explicitly owns them
 
 This separation keeps:
@@ -430,7 +445,7 @@ This separation keeps:
   "name": "JCM800 SM57 Edge",
   "createdAt": "2026-03-12T20:10:00.000Z",
   "updatedAt": "2026-03-12T20:14:00.000Z",
-  "presetId": "wavenet-standard",
+  "presetId": "a2-packed-wavenet",
   "tags": [],
   "inputAudioPath": "C:\\Users\\dave\\AppData\\Local\\Programs\\NAM-BOT\\resources\\v3_0_0.wav",
   "inputAudioIsDefault": true,
@@ -456,10 +471,10 @@ This separation keeps:
 
 ## Current Defaults
 
-Current built-in job defaults are aligned with the default WaveNet preset path.
+Current built-in job defaults are aligned with the default A2 Packed WaveNet preset path.
 
 - job name starts as `New Job`
-- preset defaults to `wavenet-standard`
+- preset defaults to `a2-packed-wavenet`
 - input audio defaults to the bundled NAM v3 training signal
 - epochs default to the preset epoch default
 - latency defaults to `0` until the user saves a different value

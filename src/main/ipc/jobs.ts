@@ -122,6 +122,7 @@ export function setupJobIpcHandlers(): void {
     const taskId = uuidv4()
     frozenSpec.id = taskId
     frozenSpec.updatedAt = new Date().toISOString()
+    await queueManager.validateJobCanTrain(frozenSpec)
     queueManager.addToQueue(frozenSpec)
     drafts.delete(draftId)
     saveDrafts()
@@ -129,7 +130,7 @@ export function setupJobIpcHandlers(): void {
   })
 
   ipcMain.handle('jobs:enqueueMany', async (_event, draftIds: string[]) => {
-    let enqueuedCount = 0
+    const specsToEnqueue: Array<{ draftId: string; spec: JobSpec }> = []
     for (const draftId of draftIds) {
       const draft = drafts.get(draftId)
       if (!draft) {
@@ -139,13 +140,20 @@ export function setupJobIpcHandlers(): void {
       const taskId = uuidv4()
       frozenSpec.id = taskId
       frozenSpec.updatedAt = new Date().toISOString()
-      queueManager.addToQueue(frozenSpec)
-      drafts.delete(draftId)
-      enqueuedCount += 1
+      specsToEnqueue.push({ draftId, spec: frozenSpec })
     }
 
-    if (enqueuedCount === 0) {
+    if (specsToEnqueue.length === 0) {
       throw new Error('No valid jobs were provided to enqueueMany')
+    }
+
+    for (const entry of specsToEnqueue) {
+      await queueManager.validateJobCanTrain(entry.spec)
+    }
+
+    for (const entry of specsToEnqueue) {
+      queueManager.addToQueue(entry.spec)
+      drafts.delete(entry.draftId)
     }
 
     saveDrafts()

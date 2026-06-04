@@ -16,6 +16,7 @@ Settings in NAM-BOT are **automatically saved** as you type. There is no manual 
 - **Conda Executable Path**: Path to the Conda executable NAM-BOT should use. On Windows this is often `conda.exe`; on macOS it is usually `conda`.
 - **Backend Mode**: Choose between using a named Conda environment, a prefix path, or a direct Python executable.
 - **Environment/Python Path**: Specific identifiers for your NAM environment.
+- **A2 local training requirement**: The selected environment must have `neural-amp-modeler>=0.13.0` for A2 presets. Diagnostics and job enqueue checks use this same backend configuration to detect the installed NAM version.
 
 ### User Information
 

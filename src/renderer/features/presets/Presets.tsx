@@ -6,12 +6,14 @@ import {
   type ArchitectureSize,
   type ImportedPresetResult,
   type ModelFamily,
+  type NamArchitectureVersion,
   type PresetCategory,
   type TrainingPresetFile,
   buildLstmConfig,
   buildWaveNetConfig,
   createImportedPreset,
   createTrainingPreset,
+  formatPresetArchitectureTag,
   normalizeTrainingPreset
 } from '../../state/types'
 import { handleCardToggleKeyDown, shouldIgnoreCardToggle } from '../../utils/card-toggle'
@@ -26,11 +28,19 @@ const PRESET_CATEGORY_OPTIONS: Array<{ value: PresetCategory; label: string }> =
 ]
 
 const MODEL_FAMILY_OPTIONS: Array<{ value: ModelFamily; label: string }> = [
+  { value: 'PackedWaveNet', label: 'Packed WaveNet' },
   { value: 'WaveNet', label: 'WaveNet' },
   { value: 'LSTM', label: 'LSTM' }
 ]
 
+const ARCHITECTURE_VERSION_OPTIONS: Array<{ value: NamArchitectureVersion; label: string }> = [
+  { value: 'a2', label: 'A2' },
+  { value: 'a1', label: 'A1' },
+  { value: 'custom', label: 'Custom' }
+]
+
 const ARCHITECTURE_OPTIONS: Array<{ value: ArchitectureSize; label: string }> = [
+  { value: 'packed', label: 'Packed' },
   { value: 'standard', label: 'Standard' },
   { value: 'lite', label: 'Lite' },
   { value: 'feather', label: 'Feather' },
@@ -42,14 +52,18 @@ const BASIC_FIELD_HELP_TEXT = {
   name: 'Library label only. Use something that helps you remember the amp, pedal, gain stage, or experiment.',
   category: 'Organizer only. This does not change training, just how the preset is grouped in your library.',
   description: 'Quick note for what this profile is aiming at, what source files it came from, or what sounded best.',
-  modelFamily: 'WaveNet is the normal starting point for new NAM amp and pedal captures. LSTM is mainly here for older compatibility cases.',
-  architectureSize: 'This controls model size and complexity. Larger models can capture more nuance, but they train slower and make bigger .nam files.',
+  architectureVersion: 'a2 is the current NAM architecture. a1 remains available for older workflows. custom marks experimental local recipes.',
+  modelFamily: 'Packed WaveNet is the A2 path. WaveNet and LSTM are available for a1 and custom local experiments.',
+  architectureSize: 'A2 uses Packed, which trains Lite and Full together. a1 presets still use Standard, Lite, Feather, or Nano.',
   epochs: 'How many passes NAM makes over the training material. More can improve the fit, but too many can start chasing noise or mismatches.',
   batchSize: 'Mostly a speed and memory knob. Raise it if your GPU has room; lower it if training runs out of memory.',
   learningRate: 'How aggressively the model updates while learning. Too high can make training unstable; too low can make it crawl.',
   learningRateDecay: 'How quickly the learning rate backs off as training goes on. Higher decay means a stronger early push and gentler late fine-tuning.',
   ny: 'Training window length. Larger values give NAM a longer slice of the signal to learn from, but they cost more memory and time.',
-  fitMrstft: 'Adds an extra frequency-aware loss term. It can help preserve texture and top-end detail on some rigs, but it changes how the fit behaves.'
+  fitMrstft: 'Adds an extra frequency-aware loss term. It can help preserve texture and top-end detail on some rigs, but it changes how the fit behaves.',
+  mrstftWeight: 'Numeric strength of the MRSTFT loss. Official A2 uses 0.0005.',
+  weightDecay: 'Adam optimizer weight decay. Official A2 uses a tiny value to regularize training.',
+  outputNormalizeRmsDb: 'A2 normalizes training output to a fixed RMS target before folding level back into the exported model.'
 } as const
 
 
@@ -64,6 +78,7 @@ interface ImportValidationState {
 }
 
 type BasicFieldKey =
+  | 'architectureVersion'
   | 'modelFamily'
   | 'architectureSize'
   | 'epochs'
@@ -72,6 +87,9 @@ type BasicFieldKey =
   | 'learningRateDecay'
   | 'ny'
   | 'fitMrstft'
+  | 'mrstftWeight'
+  | 'weightDecay'
+  | 'outputNormalizeRmsDb'
 
 interface BasicFieldOverride {
   source: string
@@ -126,6 +144,11 @@ function parsePresetCategory(value: string, fallback: PresetCategory): PresetCat
 
 function parseModelFamily(value: string, fallback: ModelFamily): ModelFamily {
   const matched = MODEL_FAMILY_OPTIONS.find((option) => option.value === value)
+  return matched?.value ?? fallback
+}
+
+function parseArchitectureVersion(value: string, fallback: NamArchitectureVersion): NamArchitectureVersion {
+  const matched = ARCHITECTURE_VERSION_OPTIONS.find((option) => option.value === value)
   return matched?.value ?? fallback
 }
 
@@ -216,11 +239,38 @@ function getNestedValue(
   }
 }
 
+function getOutputNormalizeRmsDbOverride(data: Record<string, unknown> | null): BasicFieldOverride | null {
+  if (!Array.isArray(data?.joint)) {
+    return null
+  }
+
+  const outputNormalizeStep = data.joint.find((entry) => (
+    isRecord(entry)
+    && entry.name === 'nam.data.normalize_joint_dataset_output'
+    && isRecord(entry.kwargs)
+  ))
+
+  if (!isRecord(outputNormalizeStep) || !isRecord(outputNormalizeStep.kwargs)) {
+    return null
+  }
+
+  const value = outputNormalizeStep.kwargs.level_rms_dbfs
+  return {
+    source: 'Data JSON -> joint.normalize_joint_dataset_output',
+    displayValue: String(value),
+    controlValue: typeof value === 'number' ? value : undefined
+  }
+}
+
 function formatCompactNumber(value: number): string {
   return Number(value.toFixed(6)).toString()
 }
 
 function inferArchitectureSize(modelFamily: ModelFamily, config: unknown): ArchitectureSize {
+  if (modelFamily === 'PackedWaveNet') {
+    return 'packed'
+  }
+
   if (!isRecord(config)) {
     return 'custom'
   }
@@ -253,6 +303,13 @@ function getBooleanControlValue(override: BasicFieldOverride | null, fallback: b
   return typeof override?.controlValue === 'boolean' ? override.controlValue : fallback
 }
 
+function getOptionalNumberControlValue(override: BasicFieldOverride | null, fallback: number | null): number | '' {
+  if (typeof override?.controlValue === 'number') {
+    return override.controlValue
+  }
+  return fallback ?? ''
+}
+
 function buildBasicFieldOverrides(
   data: Record<string, unknown> | null,
   model: Record<string, unknown> | null,
@@ -260,6 +317,7 @@ function buildBasicFieldOverrides(
   preset: TrainingPresetFile
 ): Record<BasicFieldKey, BasicFieldOverride | null> {
   const overrides: Record<BasicFieldKey, BasicFieldOverride | null> = {
+    architectureVersion: null,
     modelFamily: null,
     architectureSize: null,
     epochs: null,
@@ -267,7 +325,10 @@ function buildBasicFieldOverrides(
     learningRate: null,
     learningRateDecay: null,
     ny: null,
-    fitMrstft: null
+    fitMrstft: null,
+    mrstftWeight: null,
+    weightDecay: null,
+    outputNormalizeRmsDb: null
   }
 
   const modelFamilyValue = getNestedValue(model, ['net', 'name'])
@@ -279,13 +340,21 @@ function buildBasicFieldOverrides(
     overrides.modelFamily = {
       source: 'Model JSON -> net.name',
       displayValue,
-      controlValue: displayValue === 'WaveNet' || displayValue === 'LSTM' ? displayValue : undefined
+      controlValue: displayValue === 'WaveNet' || displayValue === 'LSTM' || displayValue === 'PackedWaveNet' ? displayValue : undefined
+    }
+    overrides.architectureVersion = {
+      source: 'Model JSON -> net.name',
+      displayValue: displayValue === 'PackedWaveNet' ? 'a2' : displayValue === 'WaveNet' || displayValue === 'LSTM' ? 'a1' : 'custom',
+      controlValue: displayValue === 'PackedWaveNet' ? 'a2' : displayValue === 'WaveNet' || displayValue === 'LSTM' ? 'a1' : 'custom'
     }
   }
 
-  const effectiveModelFamily = getStringControlValue(overrides.modelFamily, preset.values.modelFamily) === 'LSTM'
+  const effectiveModelFamilyValue = getStringControlValue(overrides.modelFamily, preset.values.modelFamily)
+  const effectiveModelFamily: ModelFamily = effectiveModelFamilyValue === 'LSTM'
     ? 'LSTM'
-    : 'WaveNet'
+    : effectiveModelFamilyValue === 'PackedWaveNet'
+      ? 'PackedWaveNet'
+      : 'WaveNet'
 
   const architectureValue = getNestedValue(model, ['net', 'config'])
   if (architectureValue.found) {
@@ -346,12 +415,18 @@ function buildBasicFieldOverrides(
     }
   }
 
+  overrides.outputNormalizeRmsDb = getOutputNormalizeRmsDbOverride(data)
+
   const mrstftWeight = getNestedValue(model, ['loss', 'pre_emph_mrstft_weight'])
   const mrstftCoef = getNestedValue(model, ['loss', 'pre_emph_mrstft_coef'])
-  if (mrstftWeight.found || mrstftCoef.found) {
-    const enabled = typeof mrstftWeight.value === 'number'
-      ? mrstftWeight.value > 0
-      : mrstftCoef.found
+  const directMrstftWeight = getNestedValue(model, ['loss', 'mrstft_weight'])
+  if (mrstftWeight.found || mrstftCoef.found || directMrstftWeight.found) {
+    const weightValue = directMrstftWeight.found ? directMrstftWeight.value : mrstftWeight.value
+    const enabled = typeof weightValue === 'number'
+      ? weightValue > 0
+      : typeof mrstftWeight.value === 'number'
+        ? mrstftWeight.value > 0
+        : mrstftCoef.found
 
     overrides.fitMrstft = {
       source: mrstftWeight.found
@@ -359,6 +434,24 @@ function buildBasicFieldOverrides(
         : 'Model JSON -> loss.pre_emph_mrstft_coef',
       displayValue: enabled ? 'Enabled' : 'Disabled',
       controlValue: enabled
+    }
+    if (typeof weightValue === 'number') {
+      overrides.mrstftWeight = {
+        source: directMrstftWeight.found
+          ? 'Model JSON -> loss.mrstft_weight'
+          : 'Model JSON -> loss.pre_emph_mrstft_weight',
+        displayValue: formatCompactNumber(weightValue),
+        controlValue: weightValue
+      }
+    }
+  }
+
+  const weightDecayValue = getNestedValue(model, ['optimizer', 'weight_decay'])
+  if (weightDecayValue.found) {
+    overrides.weightDecay = {
+      source: 'Model JSON -> optimizer.weight_decay',
+      displayValue: String(weightDecayValue.value),
+      controlValue: typeof weightDecayValue.value === 'number' ? weightDecayValue.value : undefined
     }
   }
 
@@ -584,6 +677,7 @@ function PresetCard({
   onCopyJson
 }: PresetCardProps) {
   const isEditable = !preset.builtIn && !preset.readOnly
+  const architectureTag = formatPresetArchitectureTag(preset)
   const summary = `${preset.values.modelFamily} / ${preset.values.architectureSize} / ${preset.values.batchSize} batch`
   const ownershipBadge = getPresetOwnershipBadge(preset)
 
@@ -607,6 +701,9 @@ function PresetCard({
           <div className="queue-card-status-row">
             <span className={`queue-status-badge ${ownershipBadge.className}`}>
               {ownershipBadge.label}
+            </span>
+            <span className="queue-status-badge queued">
+              {architectureTag}
             </span>
             <p className="queue-card-headline">{summary}</p>
           </div>
@@ -653,6 +750,10 @@ function PresetCard({
           <div className="queue-card-details preset-card-details">
             {/* Core Stats Grid */}
             <div className="queue-details-grid">
+              <div className="queue-detail-stat">
+                <span className="stat-label">NAM</span>
+                <span className="stat-value">{architectureTag}</span>
+              </div>
               <div className="queue-detail-stat">
                 <span className="stat-label">Family</span>
                 <span className="stat-value">{preset.values.modelFamily}</span>
@@ -798,6 +899,65 @@ function PresetEditor({ session, onSessionChange, onSave, onCancel }: PresetEdit
         ...session.preset.values,
         ...patch
       }
+    })
+  }
+
+  const updateArchitectureVersion = (architectureVersion: NamArchitectureVersion): void => {
+    if (architectureVersion === 'a2') {
+      updatePresetValues({
+        architectureVersion,
+        modelFamily: 'PackedWaveNet',
+        architectureSize: 'packed',
+        fitMrstft: true,
+        mrstftWeight: session.preset.values.mrstftWeight > 0 ? session.preset.values.mrstftWeight : 0.0005,
+        weightDecay: session.preset.values.weightDecay > 0 ? session.preset.values.weightDecay : 3.17e-7,
+        outputNormalizeRmsDb: session.preset.values.outputNormalizeRmsDb ?? -18
+      })
+      return
+    }
+
+    if (architectureVersion === 'a1') {
+      updatePresetValues({
+        architectureVersion,
+        modelFamily: session.preset.values.modelFamily === 'PackedWaveNet' ? 'WaveNet' : session.preset.values.modelFamily,
+        architectureSize: session.preset.values.architectureSize === 'packed' ? 'standard' : session.preset.values.architectureSize,
+        mrstftWeight: session.preset.values.mrstftWeight > 0 ? session.preset.values.mrstftWeight : 0.0002,
+        weightDecay: 0,
+        outputNormalizeRmsDb: null
+      })
+      return
+    }
+
+    updatePresetValues({ architectureVersion })
+  }
+
+  const updateModelFamily = (modelFamily: ModelFamily): void => {
+    if (modelFamily === 'PackedWaveNet') {
+      updateArchitectureVersion('a2')
+      return
+    }
+
+    updatePresetValues({
+      architectureVersion: session.preset.values.architectureVersion === 'a2' ? 'a1' : session.preset.values.architectureVersion,
+      modelFamily,
+      architectureSize: session.preset.values.architectureSize === 'packed' ? 'standard' : session.preset.values.architectureSize,
+      outputNormalizeRmsDb: session.preset.values.architectureVersion === 'a2' ? null : session.preset.values.outputNormalizeRmsDb,
+      weightDecay: session.preset.values.architectureVersion === 'a2' ? 0 : session.preset.values.weightDecay
+    })
+  }
+
+  const updateArchitectureSize = (architectureSize: ArchitectureSize): void => {
+    if (architectureSize === 'packed') {
+      updateArchitectureVersion('a2')
+      return
+    }
+
+    updatePresetValues({
+      architectureVersion: session.preset.values.architectureVersion === 'a2' ? 'a1' : session.preset.values.architectureVersion,
+      modelFamily: session.preset.values.modelFamily === 'PackedWaveNet' ? 'WaveNet' : session.preset.values.modelFamily,
+      architectureSize,
+      outputNormalizeRmsDb: session.preset.values.architectureVersion === 'a2' ? null : session.preset.values.outputNormalizeRmsDb,
+      weightDecay: session.preset.values.architectureVersion === 'a2' ? 0 : session.preset.values.weightDecay
     })
   }
 
@@ -1073,6 +1233,29 @@ function PresetEditor({ session, onSessionChange, onSave, onCancel }: PresetEdit
             >
               <div className="form-group">
                 <div className="form-label-row">
+                  <label className="form-label" htmlFor="preset-architecture-version">NAM Architecture</label>
+                  {renderInfoButton(BASIC_FIELD_HELP_TEXT.architectureVersion)}
+                </div>
+                <select
+                  id="preset-architecture-version"
+                  className="form-select"
+                  value={getStringControlValue(fieldOverrides.architectureVersion, session.preset.values.architectureVersion)}
+                  disabled={fieldOverrides.architectureVersion !== null}
+                  onChange={(event) => updateArchitectureVersion(
+                    parseArchitectureVersion(event.target.value, session.preset.values.architectureVersion)
+                  )}
+                >
+                  {ARCHITECTURE_VERSION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {renderOverrideBadge(fieldOverrides.architectureVersion)}
+              </div>
+
+              <div className="form-group">
+                <div className="form-label-row">
                   <label className="form-label" htmlFor="preset-model-family">Model Family</label>
                   {renderInfoButton(BASIC_FIELD_HELP_TEXT.modelFamily)}
                 </div>
@@ -1081,9 +1264,9 @@ function PresetEditor({ session, onSessionChange, onSave, onCancel }: PresetEdit
                   className="form-select"
                   value={getStringControlValue(fieldOverrides.modelFamily, session.preset.values.modelFamily)}
                   disabled={fieldOverrides.modelFamily !== null}
-                  onChange={(event) => updatePresetValues({
-                    modelFamily: parseModelFamily(event.target.value, session.preset.values.modelFamily)
-                  })}
+                  onChange={(event) => updateModelFamily(
+                    parseModelFamily(event.target.value, session.preset.values.modelFamily)
+                  )}
                 >
                   {MODEL_FAMILY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -1104,9 +1287,9 @@ function PresetEditor({ session, onSessionChange, onSave, onCancel }: PresetEdit
                   className="form-select"
                   value={getStringControlValue(fieldOverrides.architectureSize, session.preset.values.architectureSize)}
                   disabled={fieldOverrides.architectureSize !== null}
-                  onChange={(event) => updatePresetValues({
-                    architectureSize: parseArchitectureSize(event.target.value, session.preset.values.architectureSize)
-                  })}
+                  onChange={(event) => updateArchitectureSize(
+                    parseArchitectureSize(event.target.value, session.preset.values.architectureSize)
+                  )}
                 >
                   {ARCHITECTURE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -1227,6 +1410,70 @@ function PresetEditor({ session, onSessionChange, onSave, onCancel }: PresetEdit
                   Include MRSTFT loss
                 </label>
                 {renderOverrideBadge(fieldOverrides.fitMrstft)}
+              </div>
+
+              <div className="form-group">
+                <div className="form-label-row">
+                  <label className="form-label" htmlFor="preset-mrstft-weight">MRSTFT Weight</label>
+                  {renderInfoButton(BASIC_FIELD_HELP_TEXT.mrstftWeight)}
+                </div>
+                <input
+                  id="preset-mrstft-weight"
+                  type="number"
+                  step="0.0001"
+                  className="form-input"
+                  value={getNumberControlValue(fieldOverrides.mrstftWeight, session.preset.values.mrstftWeight)}
+                  disabled={fieldOverrides.mrstftWeight !== null}
+                  onChange={(event) => updatePresetValues({
+                    mrstftWeight: Math.max(0, parseFloat(event.target.value) || 0),
+                    fitMrstft: (parseFloat(event.target.value) || 0) > 0
+                  })}
+                />
+                {renderOverrideBadge(fieldOverrides.mrstftWeight)}
+              </div>
+
+              <div className="form-group">
+                <div className="form-label-row">
+                  <label className="form-label" htmlFor="preset-weight-decay">Weight Decay</label>
+                  {renderInfoButton(BASIC_FIELD_HELP_TEXT.weightDecay)}
+                </div>
+                <input
+                  id="preset-weight-decay"
+                  type="number"
+                  step="0.0000001"
+                  className="form-input"
+                  value={getNumberControlValue(fieldOverrides.weightDecay, session.preset.values.weightDecay)}
+                  disabled={fieldOverrides.weightDecay !== null}
+                  onChange={(event) => updatePresetValues({
+                    weightDecay: Math.max(0, parseFloat(event.target.value) || 0)
+                  })}
+                />
+                {renderOverrideBadge(fieldOverrides.weightDecay)}
+              </div>
+
+              <div className="form-group">
+                <div className="form-label-row">
+                  <label className="form-label" htmlFor="preset-output-normalize">Output Normalize RMS dB</label>
+                  {renderInfoButton(BASIC_FIELD_HELP_TEXT.outputNormalizeRmsDb)}
+                </div>
+                <input
+                  id="preset-output-normalize"
+                  type="number"
+                  step="0.1"
+                  className="form-input"
+                  value={getOptionalNumberControlValue(fieldOverrides.outputNormalizeRmsDb, session.preset.values.outputNormalizeRmsDb)}
+                  disabled={fieldOverrides.outputNormalizeRmsDb !== null}
+                  placeholder="Disabled"
+                  onChange={(event) => {
+                    const parsed = parseFloat(event.target.value)
+                    updatePresetValues({
+                      outputNormalizeRmsDb: event.target.value.trim() === '' || !Number.isFinite(parsed)
+                        ? null
+                        : parsed
+                    })
+                  }}
+                />
+                {renderOverrideBadge(fieldOverrides.outputNormalizeRmsDb)}
               </div>
             </div>
 

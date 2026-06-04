@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.1] - 2026-06-04
+
+### Added
+
+- A2 Packed WaveNet local training is now the default NAM-BOT preset, with the official packed A2 config and A1 presets still available for compatibility.
+- Presets now expose A1/A2 architecture tags, A2 recipe fields, A2-first preset ordering, and JSON override indicators for advanced custom recipes.
+- Jobs now show architecture tags across drafts, queue cards, runtime cards, and finished runs.
+- Dashboard diagnostics now summarize Backend, Accelerator, Training Launch, and NAM Version readiness in four compact cards.
+- Added focused test coverage for A2 config generation, A1 preservation, NAM version comparison, expert net replacement, and new-job default preset selection.
+
+### Changed
+
+- A2 training now requires `neural-amp-modeler>=0.13.0`, with setup, diagnostics, and documentation updated to point users at the newer NAM requirement.
+- New jobs and drag/drop drafts now prefer the current A2 default preset instead of reusing an older remembered A1 preset.
+- Expert `model.net` overrides now replace the generated network block instead of deep-merging into it, avoiding mixed A1/A2 model configs.
+- Queue actions now provide immediate `Queueing...` feedback and disable duplicate draft actions while enqueue validation is running.
+- Presets, Jobs, Dashboard, Diagnostics, Settings, and README documentation now describe the A2 workflow and updated diagnostics surface.
+
+### Fixed
+
+- Batch enqueue now preflights all selected drafts before adding any of them to the queue, preventing partial batches when an A2 version requirement fails.
+- The NAM version update action no longer offers an irrelevant Settings shortcut when the fix is a Python environment package upgrade.
+
 ## [0.5.1] - 2026-05-11
 
 ### Added

@@ -1,6 +1,7 @@
 import {
   JobRuntimeState,
-  TrainingPresetFile
+  TrainingPresetFile,
+  formatPresetArchitectureTag
 } from '../../state/types'
 import { handleCardToggleKeyDown, shouldIgnoreCardToggle } from '../../utils/card-toggle'
 import {
@@ -75,7 +76,9 @@ export default function RuntimeCard({
   const isRetryableDisplay = displayState === 'Error'
   const outputPath = getOutputPath(runtime)
   const batchSourceName = runtime.frozenJob.batchSourceName?.trim() || ''
-  const presetName = presets.find((preset) => preset.id === runtime.frozenJob.presetId)?.name || runtime.frozenJob.presetId || 'Unknown'
+  const preset = presets.find((entry) => entry.id === runtime.frozenJob.presetId)
+  const presetName = preset?.name || runtime.frozenJob.presetId || 'Unknown'
+  const presetTag = preset ? formatPresetArchitectureTag(preset) : 'CUSTOM'
   const collapsedSummaryItems = getCollapsedSummaryItems(runtime, presetName, nowMs)
   const hasPrimaryActions = (displayState === 'Queued' && onUnqueue)
     || (displayState === 'Running' && stopAction)
@@ -231,7 +234,7 @@ export default function RuntimeCard({
           <div className="queue-details-grid">
             <div className="queue-detail-stat">
               <span className="stat-label">Preset</span>
-              <span className="stat-value">{presetName}</span>
+              <span className="stat-value"><span className="queue-status-badge queued">{presetTag}</span> {presetName}</span>
             </div>
             <div className="queue-detail-stat">
               <span className="stat-label">Epochs</span>

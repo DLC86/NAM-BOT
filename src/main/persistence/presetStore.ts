@@ -7,6 +7,7 @@ import {
   TrainingPresetFile,
   builtInTrainingPresets,
   createTrainingPreset,
+  getPresetArchitectureVersion,
   normalizeTrainingPreset,
   slugifyPresetName
 } from '../types/jobs'
@@ -79,12 +80,31 @@ function getPresetSortBucket(preset: TrainingPresetFile): number {
   return 0
 }
 
+function getPresetArchitectureSortBucket(preset: TrainingPresetFile): number {
+  switch (getPresetArchitectureVersion(preset)) {
+    case 'a2':
+      return 0
+    case 'a1':
+      return 1
+    case 'custom':
+    default:
+      return 2
+  }
+}
+
 function sortTrainingPresets(presets: TrainingPresetFile[]): TrainingPresetFile[] {
   const builtInOrder = new Map<string, number>(
     builtInTrainingPresets.map((preset, index) => [preset.id, index])
   )
 
   return [...presets].sort((left, right) => {
+    const leftArchitectureBucket = getPresetArchitectureSortBucket(left)
+    const rightArchitectureBucket = getPresetArchitectureSortBucket(right)
+
+    if (leftArchitectureBucket !== rightArchitectureBucket) {
+      return leftArchitectureBucket - rightArchitectureBucket
+    }
+
     const leftBucket = getPresetSortBucket(left)
     const rightBucket = getPresetSortBucket(right)
 

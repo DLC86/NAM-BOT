@@ -74,6 +74,8 @@ The matrix groups rows by:
 
 Rows use `PASS`, `CHECK`, `FAIL`, and `SKIP` labels. Failed rows can include one-line guidance directly in the row, while full troubleshooting exports and raw facts stay in `Advanced Details`.
 
+The NAM Version group also doubles as the A2 local-training gate reminder. NAM-BOT currently requires `neural-amp-modeler>=0.13.0` for A2 presets, and version/update advisories include the environment-specific upgrade command.
+
 ### Backend Diagnostics Panel
 
 The top panel focuses on basic backend reachability.
@@ -312,7 +314,7 @@ Recommended repair commands for the affected environment:
 pip show lightning pytorch-lightning
 pip uninstall -y lightning pytorch-lightning pytorch_lightning
 pip install "pytorch-lightning<=2.6.1"
-pip install --upgrade "neural-amp-modeler>=0.12.3"
+pip install --upgrade "neural-amp-modeler>=0.13.0"
 ```
 
 If the affected Lightning package was already imported in that environment, treat the machine or environment as potentially compromised and rotate credentials that may have been present.

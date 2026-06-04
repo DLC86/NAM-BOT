@@ -10,6 +10,7 @@ import {
   TrainingLaunchDiagnosticsSummary,
   useAppStore
 } from '../../state/store'
+import { MIN_A2_NAM_VERSION } from '../../state/types'
 
 interface CopyableCodeBlockProps {
   label: string
@@ -301,7 +302,7 @@ function getDiagnosticCommands(settings: AppSettings | null): DiagnosticCommandS
       "import importlib.util, importlib, torch; print(torch.__version__); print(torch.cuda.is_available()); print(importlib.import_module('lightning').__version__ if importlib.util.find_spec('lightning') else 'lightning not installed'); print(importlib.import_module('pytorch_lightning').__version__ if importlib.util.find_spec('pytorch_lightning') else 'pytorch_lightning not installed')"
     ),
     inspectLightningSecurity: buildPipCommand(settings, 'show lightning pytorch-lightning'),
-    reinstallNam: buildPipCommand(settings, 'install --upgrade "neural-amp-modeler>=0.12.3"'),
+    reinstallNam: buildPipCommand(settings, 'install --upgrade "neural-amp-modeler>=0.13.0"'),
     uninstallLightning: buildPipCommand(settings, 'uninstall -y lightning pytorch-lightning pytorch_lightning'),
     installSafeLightning: buildPipCommand(settings, 'install "pytorch-lightning<=2.6.1"'),
     uninstallTorch: buildPipCommand(settings, 'uninstall -y torch'),
@@ -753,7 +754,7 @@ function getUpgradeCommands(settings: AppSettings | null): CopyableCodeBlockProp
 
   commands.push({
     label: 'Upgrade NAM',
-    command: buildPipCommand(settings, 'install --upgrade "neural-amp-modeler>=0.12.3"')
+    command: buildPipCommand(settings, 'install --upgrade "neural-amp-modeler>=0.13.0"')
   })
 
   commands.push({
@@ -873,6 +874,7 @@ interface ActionItem {
   commands: CopyableCodeBlockProps[]
   verify: string
   tone: MatrixStatus
+  showSettingsAction?: boolean
 }
 
 function getStatusColor(status: MatrixStatus): string {
@@ -1084,7 +1086,9 @@ function getVersionRows(namVersionInfo: NamVersionInfo | null): MatrixRow[] {
   return [{
     status: namVersionInfo.isUpToDate === false ? 'warn' : 'pass',
     title: 'NAM version',
-    message: namVersionInfo.isUpToDate === false ? 'A newer NAM version is available.' : 'Installed NAM is up to date.',
+    message: namVersionInfo.isUpToDate === false
+      ? `A newer NAM version is available. A2 training requires neural-amp-modeler ${MIN_A2_NAM_VERSION} or newer.`
+      : `Installed NAM is up to date and meets the A2 training requirement of ${MIN_A2_NAM_VERSION} or newer.`,
     detail: `Installed: ${namVersionInfo.installedVersion ?? 'not detected'}; Latest: ${namVersionInfo.latestVersion ?? 'not reported'}`
   }]
 }
@@ -1140,7 +1144,7 @@ function getSummaryTiles(
       status: !namVersionInfo ? 'skip' : namVersionInfo.checkStatus !== 'ok' || namVersionInfo.isUpToDate === false ? 'warn' : 'pass',
       label: getVersionStatusBadge(namVersionInfo).label,
       detail: namVersionInfo?.checkStatus === 'ok'
-        ? `Installed ${namVersionInfo.installedVersion ?? 'unknown'}; latest ${namVersionInfo.latestVersion ?? 'unknown'}.`
+        ? `Installed ${namVersionInfo.installedVersion ?? 'unknown'}; latest ${namVersionInfo.latestVersion ?? 'unknown'}. A2 training requires ${MIN_A2_NAM_VERSION}+.`
         : namVersionInfo?.errorMessage ?? 'Waiting for version check.',
       checkedAt: null
     }
@@ -1311,11 +1315,12 @@ function buildVersionAction(settings: AppSettings | null, namVersionInfo: NamVer
   return {
     title: 'Recommended Update',
     headline: 'A newer NAM version is available',
-    body: 'Updating NAM is not always required, but newer releases can include training fixes and compatibility improvements.',
+    body: `A2 local training requires neural-amp-modeler ${MIN_A2_NAM_VERSION} or newer. Updating NAM also brings newer training fixes and compatibility improvements.`,
     steps: ['Run the upgrade command in your selected environment.', 'Return to Diagnostics.', 'Click Re-check All.'],
     commands: getUpgradeCommands(settings),
     verify: 'The NAM Version tile should report Up to date.',
-    tone: 'warn'
+    tone: 'warn',
+    showSettingsAction: false
   }
 }
 
@@ -1400,7 +1405,9 @@ function ActionCenter({ actions, allReady, onOpenSettings }: { actions: ActionIt
             <p style={{ color: 'var(--text-ash)', fontSize: '18px', marginBottom: '6px' }}>{primary.headline}</p>
             <p style={{ color: 'var(--text-steel)', fontSize: '13px', lineHeight: 1.55 }}>{primary.body}</p>
           </div>
-          <button className="btn btn-sm btn-secondary" onClick={onOpenSettings}>Open Settings</button>
+          {primary.showSettingsAction !== false && (
+            <button className="btn btn-sm btn-secondary" onClick={onOpenSettings}>Open Settings</button>
+          )}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '14px' }}>
