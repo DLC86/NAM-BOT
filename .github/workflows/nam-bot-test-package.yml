@@ -1,0 +1,53 @@
+name: NAM-BOT Test Package
+
+on:
+  push:
+    branches:
+      - 'test/a2-full-validation-esr'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-package:
+    name: Build Windows Test Package
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build production app
+        run: npm run build
+
+      - name: Package Windows app
+        run: npx electron-builder --win --config electron-builder.yml --publish never
+
+      - name: Compress portable app
+        shell: powershell
+        run: |
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $portableAsset = "release\NAM-BOT-Test-Portable-$shortSha-Win64.zip"
+          Compress-Archive -Path 'release\win-unpacked\*' -DestinationPath $portableAsset -Force
+
+      - name: Upload Windows test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-build
+          path: |
+            release/NAM-BOT-Setup-*.exe
+            release/NAM-BOT-Test-Portable-*-Win64.zip
+          if-no-files-found: error
+          retention-days: 7
