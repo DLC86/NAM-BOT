@@ -34,6 +34,14 @@ export interface TorchRuntimeSummary {
   mpsAvailable: boolean | null
 }
 
+export interface NamLatencyAnalysis {
+  delaySamples: number
+  rawDelays: number[]
+  safetyFactor: number
+  inputBlipOffsets: number[]
+  inputBlipPeaks: number[]
+}
+
 interface AcceleratorProbePayload {
   pythonVersion: string | null
   pythonExecutable: string | null
@@ -78,6 +86,7 @@ const LIGHTNING_SECURITY_PREFIX = 'NAM_BOT_LIGHTNING_SECURITY='
 const TRAINING_LAUNCH_PTY_PREFIX = 'NAM_BOT_PTY_OK'
 const TRAINING_LAUNCH_TIMEOUT_MS = 30_000
 const LIGHTNING_SECURITY_RECENT_RESULT_TTL_MS = 5_000
+const NAM_LATENCY_ANALYSIS_PREFIX = 'NAM_BOT_LATENCY_ANALYSIS='
 const lightningSecurityInFlight = new Map<string, Promise<LightningSecuritySummary>>()
 const lightningSecurityRecentResults = new Map<string, { checkedAt: number; summary: LightningSecuritySummary }>()
 
@@ -901,7 +910,8 @@ export async function validateBackend(settings: AppSettings): Promise<BackendVal
 
 async function runCondaCommand(
   settings: AppSettings,
-  args: string[]
+  args: string[],
+  timeoutMs = 30_000
 ): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let proc: ChildProcess
@@ -951,21 +961,23 @@ async function runCondaCommand(
       }
       await forceKillProcessTree(proc)
       settle({ ok: false, output: 'Command timed out' })
-    }, 30000)
+    }, timeoutMs)
   })
 }
 
 async function runPythonScriptInEnvironment(
   settings: AppSettings,
   script: string,
-  scriptName: string
+  scriptName: string,
+  scriptArgs: string[] = [],
+  timeoutMs = 30_000
 ): Promise<{ ok: boolean; output: string }> {
   const tempDir = mkdtempSync(join(tmpdir(), 'nam-bot-probe-'))
   const scriptPath = join(tempDir, scriptName)
 
   try {
     writeFileSync(scriptPath, script, 'utf8')
-    return await runCondaCommand(settings, ['python', scriptPath])
+    return await runCondaCommand(settings, ['python', scriptPath, ...scriptArgs], timeoutMs)
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
@@ -1081,6 +1093,145 @@ async function assertLightningPackageSafe(settings: AppSettings): Promise<void> 
   const vulnerableLightningPackage = getVulnerableLightningPackage(lightningSecurity)
   if (vulnerableLightningPackage) {
     throw new Error(createLightningSecurityErrorMessage(vulnerableLightningPackage))
+  }
+}
+
+export async function analyzeNamLatency(
+  settings: AppSettings,
+  inputPath: string,
+  outputPath: string
+): Promise<NamLatencyAnalysis> {
+  await assertLightningPackageSafe(settings)
+
+  const script = [
+    'import json',
+    'import sys',
+    'import numpy as np',
+    '',
+    'from nam.data import wav_to_np',
+    'from nam.train.core import _calibrate_latency_v3',
+    '',
+    'input_path = sys.argv[1]',
+    'output_path = sys.argv[2]',
+    '',
+    'rate = 48000',
+    'minimum_prefix_samples = 17 * rate',
+    'minimum_output_samples = 12 * rate',
+    'blip_positions = (504000, 552000)',
+    'search_radius = 256',
+    '',
+    'x, x_info = wav_to_np(input_path, info=True)',
+    'y, y_info = wav_to_np(output_path, info=True)',
+    '',
+    'if int(x_info.rate) != rate:',
+    '    raise RuntimeError(f"Automatic V3 latency detection requires 48000 Hz input; got {x_info.rate} Hz.")',
+    '',
+    'if int(y_info.rate) != rate:',
+    '    raise RuntimeError(f"Automatic V3 latency detection requires 48000 Hz output; got {y_info.rate} Hz.")',
+    '',
+    'if len(x) < minimum_prefix_samples:',
+    '    raise RuntimeError("The input is shorter than the 17-second V3-compatible prefix.")',
+    '',
+    'if len(y) < minimum_output_samples:',
+    '    raise RuntimeError("The output is too short to contain the V3 calibration blips.")',
+    '',
+    'prefix_peak = float(np.max(np.abs(x[:minimum_prefix_samples])))',
+    'if prefix_peak <= 0.0:',
+    '    raise RuntimeError("The input calibration prefix is silent.")',
+    '',
+    'blip_offsets = []',
+    'blip_peaks = []',
+    '',
+    'for expected_position in blip_positions:',
+    '    start = expected_position - search_radius',
+    '    stop = expected_position + search_radius + 1',
+    '    window = np.abs(x[start:stop])',
+    '    if window.size == 0:',
+    '        raise RuntimeError("Could not inspect an expected V3 blip position.")',
+    '',
+    '    local_index = int(np.argmax(window))',
+    '    actual_position = start + local_index',
+    '    peak = float(window[local_index])',
+    '',
+    '    baseline_start = max(0, expected_position - 4096)',
+    '    baseline_stop = max(baseline_start + 1, expected_position - 512)',
+    '    baseline = float(np.max(np.abs(x[baseline_start:baseline_stop])))',
+    '    required_peak = max(0.05, prefix_peak * 0.10, baseline + 0.05)',
+    '',
+    '    if peak < required_peak:',
+    '        raise RuntimeError(',
+    '            "The input does not contain usable V3 calibration blips near 10.5 and 11.5 seconds."',
+    '        )',
+    '',
+    '    blip_offsets.append(int(actual_position - expected_position))',
+    '    blip_peaks.append(peak)',
+    '',
+    'calibration = _calibrate_latency_v3(',
+    '    y,',
+    '    manual_available=False,',
+    '    show_plots=False,',
+    '    _override_suppress_plots=True,',
+    ')',
+    '',
+    'if calibration.recommended is None:',
+    '    raise RuntimeError("NAM could not detect a response to the V3 calibration blips in the output.")',
+    '',
+    'payload = {',
+    '    "delaySamples": int(calibration.recommended),',
+    '    "rawDelays": [int(value) for value in calibration.delays],',
+    '    "safetyFactor": int(calibration.safety_factor),',
+    '    "inputBlipOffsets": blip_offsets,',
+    '    "inputBlipPeaks": blip_peaks,',
+    '}',
+    '',
+    `print('${NAM_LATENCY_ANALYSIS_PREFIX}' + json.dumps(payload))`
+  ].join('\n')
+
+  const result = await runPythonScriptInEnvironment(
+    settings,
+    script,
+    'nam-latency-analysis.py',
+    [inputPath, outputPath],
+    120_000
+  )
+
+  const line = result.output
+    .split(/\r?\n/)
+    .find((entry) => entry.trim().startsWith(NAM_LATENCY_ANALYSIS_PREFIX))
+
+  if (!result.ok || !line) {
+    const detail = result.output.trim()
+    throw new Error(
+      `Automatic latency detection failed. The input must be 48 kHz and contain usable V3 calibration blips near 10.5 and 11.5 seconds.${detail ? `\n\n${detail}` : ''}`
+    )
+  }
+
+  try {
+    const payload = JSON.parse(
+      line.trim().slice(NAM_LATENCY_ANALYSIS_PREFIX.length)
+    ) as Partial<NamLatencyAnalysis>
+
+    if (typeof payload.delaySamples !== 'number' || !Number.isInteger(payload.delaySamples)) {
+      throw new Error('NAM returned an invalid automatic latency value.')
+    }
+
+    return {
+      delaySamples: payload.delaySamples,
+      rawDelays: Array.isArray(payload.rawDelays)
+        ? payload.rawDelays.filter((value): value is number => typeof value === 'number')
+        : [],
+      safetyFactor: typeof payload.safetyFactor === 'number' ? payload.safetyFactor : 0,
+      inputBlipOffsets: Array.isArray(payload.inputBlipOffsets)
+        ? payload.inputBlipOffsets.filter((value): value is number => typeof value === 'number')
+        : [],
+      inputBlipPeaks: Array.isArray(payload.inputBlipPeaks)
+        ? payload.inputBlipPeaks.filter((value): value is number => typeof value === 'number')
+        : []
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to parse NAM automatic latency analysis: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 

@@ -13,6 +13,7 @@ export type JobStopMode = 'graceful' | 'force'
 
 export type PresetCategory = 'quality' | 'speed' | 'architecture' | 'custom'
 export type NamArchitectureVersion = 'a1' | 'a2' | 'custom'
+export type LatencyMode = 'auto' | 'manual'
 export type ModelFamily = 'WaveNet' | 'PackedWaveNet' | 'LSTM'
 export type ArchitectureSize = 'standard' | 'lite' | 'feather' | 'nano' | 'packed' | 'custom'
 export type NamGearType = 'amp' | 'pedal' | 'pedal_amp' | 'amp_cab' | 'amp_pedal_cab' | 'preamp' | 'studio'
@@ -78,6 +79,7 @@ export interface NamEmbeddedMetadata {
 
 export interface JobTrainingOverrides {
   epochs?: number
+  latencyMode?: LatencyMode
   latencySamples?: number
 }
 
@@ -256,6 +258,7 @@ export const defaultJobSpec: Omit<JobSpec, 'id' | 'createdAt' | 'updatedAt'> = {
   },
   trainingOverrides: {
     epochs: DEFAULT_TRAINING_PRESET_VALUES.epochs,
+    latencyMode: 'auto',
     latencySamples: 0
   },
   uiNotes: ''
@@ -950,6 +953,9 @@ export function normalizeJobSpec(value: unknown): JobSpec {
     metadata: normalizeNamMetadata(value.metadata),
     trainingOverrides: {
       epochs: asPositiveInt(trainingOverrides.epochs, asPositiveInt(legacyLearningSettings.epochs, defaultJobSpec.trainingOverrides.epochs ?? 100)),
+      latencyMode: trainingOverrides.latencyMode === 'auto' || trainingOverrides.latencyMode === 'manual'
+        ? trainingOverrides.latencyMode
+        : 'manual',
       latencySamples: Math.round(
         asFiniteNumber(
           trainingOverrides.latencySamples,

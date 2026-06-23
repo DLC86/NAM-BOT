@@ -1023,6 +1023,7 @@ function JobEditor({
     ?? visiblePresets[0]
   const epochsLocked = selectedPreset?.lockedJobFields.includes('epochs') ?? false
   const latencyLocked = selectedPreset?.lockedJobFields.includes('latencySamples') ?? false
+  const latencyMode = editedJob.trainingOverrides.latencyMode ?? 'manual'
 
   // Auto-sync output root dir when following the output-audio directory mode.
   useEffect(() => {
@@ -1194,7 +1195,7 @@ function JobEditor({
 
         <form id={JOB_EDITOR_FORM_ID} onSubmit={handleSubmit}>
 
-          {/* ── Job Name ── */}
+          {/* ?? Job Name ?? */}
           <div className="form-group">
             <div className="form-label-row">
               <label className="form-label" htmlFor="job-name">
@@ -1225,7 +1226,7 @@ function JobEditor({
             />
           </div>
 
-          {/* ── Input Audio ── */}
+          {/* ?? Input Audio ?? */}
           <div className="form-group">
             <label className="form-label">
               Input Audio (Training Signal) {showValidationErrors && !isInputValid && <span style={{ color: 'var(--neon-magenta)', fontSize: '12px' }}>(Required)</span>}
@@ -1280,7 +1281,7 @@ function JobEditor({
             )}
           </div>
 
-          {/* ── Output Audio ── */}
+          {/* ?? Output Audio ?? */}
           <div className="form-group">
             <label className="form-label" htmlFor="output-audio-path">
               Output Audio (Re-amped Signal) {showValidationErrors && !isOutputValid && <span style={{ color: 'var(--neon-magenta)', fontSize: '12px' }}>(Required)</span>}
@@ -1299,7 +1300,7 @@ function JobEditor({
             />
           </div>
 
-          {/* ── Output Root Dir ── */}
+          {/* ?? Output Root Dir ?? */}
           <div className="form-group">
             <label className="form-label" htmlFor="output-root-dir">
               Output Root Directory {showValidationErrors && !isRootDirValid && <span style={{ color: 'var(--neon-magenta)', fontSize: '12px' }}>(Required)</span>}
@@ -1432,7 +1433,7 @@ function JobEditor({
             </div>
           </div>
 
-          {/* ── Training Settings ── */}
+          {/* ?? Training Settings ?? */}
           <div style={{ borderTop: '2px solid var(--border-dim)', marginTop: '16px', paddingTop: '16px' }}>
             <h4 style={{ fontFamily: 'var(--font-arcade)', color: 'var(--neon-cyan)', marginBottom: '12px' }}>
               Training Settings
@@ -1503,13 +1504,51 @@ function JobEditor({
               </div>
 
               <div className="form-group">
+                <label className="form-label">Latency compensation</label>
+                <div className="toggle-group" style={{ marginBottom: '10px' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${latencyMode === 'auto' ? 'btn-green' : 'btn-secondary'}`}
+                    disabled={latencyLocked}
+                    onClick={() => onSessionChange({
+                      ...session,
+                      job: {
+                        ...editedJob,
+                        trainingOverrides: {
+                          ...editedJob.trainingOverrides,
+                          latencyMode: 'auto'
+                        }
+                      }
+                    })}
+                  >
+                    Automatic
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${latencyMode === 'manual' ? 'btn-blue' : 'btn-secondary'}`}
+                    disabled={latencyLocked}
+                    onClick={() => onSessionChange({
+                      ...session,
+                      job: {
+                        ...editedJob,
+                        trainingOverrides: {
+                          ...editedJob.trainingOverrides,
+                          latencyMode: 'manual'
+                        }
+                      }
+                    })}
+                  >
+                    Manual
+                  </button>
+                </div>
+
                 <label className="form-label" htmlFor="latency-samples">Latency / Delay (samples)</label>
                 <input
                   id="latency-samples"
                   type="number"
                   className="form-input"
                   value={editedJob.trainingOverrides?.latencySamples ?? 0}
-                  disabled={latencyLocked}
+                  disabled={latencyLocked || latencyMode === 'auto'}
                   onChange={(e) => onSessionChange({
                     ...session,
                     job: {
@@ -1522,7 +1561,9 @@ function JobEditor({
                   })}
                 />
                 <p style={{ color: 'var(--text-steel)', fontSize: '12px', marginTop: '6px' }}>
-                  This writes to `data.common.delay` for `nam-full`. Use `0` only if the files are already aligned.
+                  {latencyMode === 'auto'
+                    ? 'Detects delay from the V3 calibration blips near 10.5 and 11.5 seconds, writes it to data.common.delay, then continues with nam-full. The rest of the input may be custom.'
+                    : 'Writes this value to data.common.delay for nam-full. Use 0 only if the files are already aligned.'}
                 </p>
                 {latencyLocked && (
                   <p style={{ color: 'var(--text-steel)', fontSize: '12px', marginTop: '6px' }}>
@@ -1533,7 +1574,7 @@ function JobEditor({
             </div>
           </div>
 
-          {/* ── NAM Embedded Metadata ── */}
+          {/* ?? NAM Embedded Metadata ?? */}
           <div style={{ borderTop: '2px solid var(--border-dim)', marginTop: '16px', paddingTop: '16px' }}>
             <h4 style={{ fontFamily: 'var(--font-arcade)', color: 'var(--neon-cyan)', marginBottom: '4px' }}>
               NAM Metadata
@@ -1609,7 +1650,7 @@ function JobEditor({
                   value={editedJob.metadata?.gearType || ''}
                   onChange={(e) => updateMeta({ gearType: e.target.value as NamGearType | '' })}
                 >
-                  <option value="">— Select —</option>
+                  <option value="">? Select ?</option>
                   {NAM_GEAR_TYPE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -1626,7 +1667,7 @@ function JobEditor({
                   value={editedJob.metadata?.toneType || ''}
                   onChange={(e) => updateMeta({ toneType: e.target.value as NamToneType | '' })}
                 >
-                  <option value="">— Select —</option>
+                  <option value="">? Select ?</option>
                   {NAM_TONE_TYPE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -1663,7 +1704,7 @@ function JobEditor({
             </div>
           </div>
 
-          {/* ── Actions ── */}
+          {/* ?? Actions ?? */}
           <div style={{ marginTop: '24px', display: 'flex', gap: '12px', alignItems: 'center' }}>
             <button
               type="submit"

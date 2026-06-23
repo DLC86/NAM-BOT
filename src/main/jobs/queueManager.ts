@@ -14,7 +14,14 @@ import {
 } from 'fs'
 import log from 'electron-log/main'
 import { v4 as uuidv4 } from 'uuid'
-import { compareVersions, inspectTorchRuntime, runNamFull, TorchRuntimeSummary, TrainingProcessController } from '../backend/adapter'
+import {
+  analyzeNamLatency,
+  compareVersions,
+  inspectTorchRuntime,
+  runNamFull,
+  TorchRuntimeSummary,
+  TrainingProcessController
+} from '../backend/adapter'
 import { buildJobConfigs } from '../config/configBuilder'
 import { getTrainingPresetById } from '../persistence/presetStore'
 import {
@@ -209,15 +216,24 @@ function deriveTrainedEpochs(runtime: JobRuntimeState): number | null {
 
 function readConfirmedTrainingMetadata(runtime: JobRuntimeState): ConfirmedNamTrainingMetadata {
   const trainingMetadata: ConfirmedNamTrainingMetadata = {}
-  const bestValidationEsr = runtime.checkpointSummary?.bestValidationEsr
-  if (bestValidationEsr != null) {
-    trainingMetadata.validationEsr = bestValidationEsr
+  const checkpointSummary = runtime.checkpointSummary
+  const validationEsr = checkpointSummary?.bestValidationEsrKind === 'aggregate'
+    ? checkpointSummary.packedSubmodels?.find(
+      (submodel) => submodel.submodelName === 'channels_8'
+    )?.bestValidationMetric
+    : checkpointSummary?.bestValidationEsr
+
+  if (validationEsr != null) {
+    trainingMetadata.validationEsr = validationEsr
   }
 
   const dataConfigPath = runtime.generatedConfigPaths?.dataConfig
   if (!dataConfigPath || !existsSync(dataConfigPath)) {
     return trainingMetadata
   }
+
+  const latencyMode = runtime.frozenJob.trainingOverrides.latencyMode ?? 'manual'
+  trainingMetadata.latencyMode = latencyMode
 
   try {
     const parsed = JSON.parse(readFileSync(dataConfigPath, 'utf-8')) as unknown
@@ -237,7 +253,11 @@ function readConfirmedTrainingMetadata(runtime: JobRuntimeState): ConfirmedNamTr
 
     const delay = parsed.common.delay
     if (typeof delay === 'number' && Number.isFinite(delay)) {
-      trainingMetadata.manualLatency = delay
+      if (latencyMode === 'auto') {
+        trainingMetadata.detectedLatency = delay
+      } else {
+        trainingMetadata.manualLatency = delay
+      }
     }
   } catch (error) {
     log.warn('Failed to read generated data config for NAM training metadata:', error)
@@ -1184,7 +1204,7 @@ export class QueueManager extends EventEmitter {
       }
     }
 
-    const timingMatch = /(\d{1,2}:\d{2}(?::\d{2})?)\s*[•·]\s*([\-:0-9]+)\s+([0-9.]+it\/s)/.exec(trimmed)
+    const timingMatch = /(\d{1,2}:\d{2}(?::\d{2})?)\s*[??]\s*([\-:0-9]+)\s+([0-9.]+it\/s)/.exec(trimmed)
     if (timingMatch) {
       progress.elapsed = timingMatch[1]
       progress.remaining = timingMatch[2]
@@ -1592,7 +1612,37 @@ export class QueueManager extends EventEmitter {
       await this.assertTrainingRequirements(jobSpec)
       this.appendUserMessage(runtime, 'Generating NAM training configuration files...')
       const preset = getTrainingPresetById(jobSpec.presetId)
-      const configPaths = buildJobConfigs(jobSpec, workspaceDir, preset)
+      const resolvedJobSpec = cloneJobSpec(jobSpec)
+      const latencyMode = resolvedJobSpec.trainingOverrides.latencyMode ?? 'manual'
+
+      if (latencyMode === 'auto' && !preset.lockedJobFields.includes('latencySamples')) {
+        this.appendUserMessage(runtime, 'Analyzing capture latency from the V3-compatible calibration prefix...')
+        runtime.logSummary = {
+          ...runtime.logSummary,
+          latestStructuredLine: 'Analyzing capture latency'
+        }
+        this.emitJobUpdate(runtime)
+
+        const latencyAnalysis = await analyzeNamLatency(
+          this.settings!,
+          resolvedJobSpec.inputAudioPath,
+          resolvedJobSpec.outputAudioPath
+        )
+
+        resolvedJobSpec.trainingOverrides.latencySamples = latencyAnalysis.delaySamples
+
+        this.appendUserMessage(
+          runtime,
+          `Automatic latency compensation: ${latencyAnalysis.delaySamples} samples.`
+        )
+        runtime.logSummary = {
+          ...runtime.logSummary,
+          latestStructuredLine: `Detected latency: ${latencyAnalysis.delaySamples} samples`
+        }
+        this.emitJobUpdate(runtime)
+      }
+
+      const configPaths = buildJobConfigs(resolvedJobSpec, workspaceDir, preset)
       runtime.generatedConfigPaths = configPaths
       await this.prepareLearningConfigForRuntime(configPaths, runtime)
 

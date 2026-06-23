@@ -1,6 +1,8 @@
 export interface ConfirmedNamTrainingMetadata {
   validationEsr?: number
+  latencyMode?: 'auto' | 'manual'
   manualLatency?: number | null
+  detectedLatency?: number | null
   trainedEpochs?: number
   presetName?: string
 }
@@ -29,6 +31,12 @@ function hasManualLatency(
   value: ConfirmedNamTrainingMetadata
 ): value is ConfirmedNamTrainingMetadata & { manualLatency: number | null | undefined } {
   return Object.prototype.hasOwnProperty.call(value, 'manualLatency')
+}
+
+function hasDetectedLatency(
+  value: ConfirmedNamTrainingMetadata
+): value is ConfirmedNamTrainingMetadata & { detectedLatency: number | null | undefined } {
+  return Object.prototype.hasOwnProperty.call(value, 'detectedLatency')
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -107,7 +115,19 @@ function buildNamBotMetadata(
     nextNamBotMetadata.preset_name = confirmedTrainingMetadata.presetName
   }
 
-  if (hasManualLatency(confirmedTrainingMetadata)) {
+  if (confirmedTrainingMetadata.latencyMode === 'auto') {
+    nextNamBotMetadata.latency_mode = 'auto'
+    delete nextNamBotMetadata.manual_latency_samples
+    if (hasDetectedLatency(confirmedTrainingMetadata)) {
+      nextNamBotMetadata.detected_latency_samples = confirmedTrainingMetadata.detectedLatency ?? null
+    }
+  } else if (confirmedTrainingMetadata.latencyMode === 'manual') {
+    nextNamBotMetadata.latency_mode = 'manual'
+    delete nextNamBotMetadata.detected_latency_samples
+    if (hasManualLatency(confirmedTrainingMetadata)) {
+      nextNamBotMetadata.manual_latency_samples = confirmedTrainingMetadata.manualLatency ?? null
+    }
+  } else if (hasManualLatency(confirmedTrainingMetadata)) {
     nextNamBotMetadata.manual_latency_samples = confirmedTrainingMetadata.manualLatency ?? null
   }
 
@@ -120,7 +140,10 @@ export function hasNamModelMetadataUpdates(
 ): boolean {
   return Object.keys(metadataPatch).length > 0
     || confirmedTrainingMetadata.validationEsr != null
+    || confirmedTrainingMetadata.latencyMode === 'auto'
+    || confirmedTrainingMetadata.latencyMode === 'manual'
     || hasManualLatency(confirmedTrainingMetadata)
+    || hasDetectedLatency(confirmedTrainingMetadata)
     || isPositiveInteger(confirmedTrainingMetadata.trainedEpochs)
     || isNonEmptyString(confirmedTrainingMetadata.presetName)
 }
